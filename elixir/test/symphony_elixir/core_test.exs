@@ -7,6 +7,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_project_slug: nil,
       poll_interval_ms: nil,
       tracker_active_states: nil,
+      tracker_exclude_labels: nil,
       tracker_terminal_states: nil,
       codex_command: nil
     )
@@ -14,6 +15,7 @@ defmodule SymphonyElixir.CoreTest do
     config = Config.settings!()
     assert config.polling.interval_ms == 30_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
+    assert config.tracker.exclude_labels == []
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
@@ -40,6 +42,9 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "tracker.active_states"
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_exclude_labels: ["human-action"])
+    assert Config.settings!().tracker.exclude_labels == ["human-action"]
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",

@@ -601,6 +601,7 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) do
     issue_routable_to_worker?(issue) and
       active_issue_state?(state_name, active_states) and
+      !excluded_label_issue?(issue) and
       !terminal_issue_state?(state_name, terminal_states)
   end
 
@@ -656,6 +657,23 @@ defmodule SymphonyElixir.Orchestrator do
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
   end
+
+  defp excluded_label_set do
+    Config.settings!().tracker.exclude_labels
+    |> Enum.map(&normalize_issue_state/1)
+    |> Enum.filter(&(&1 != ""))
+    |> MapSet.new()
+  end
+
+  defp excluded_label_issue?(%Issue{labels: labels}) when is_list(labels) do
+    excluded_labels = excluded_label_set()
+
+    Enum.any?(labels, fn label ->
+      MapSet.member?(excluded_labels, normalize_issue_state(to_string(label)))
+    end)
+  end
+
+  defp excluded_label_issue?(_issue), do: false
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
