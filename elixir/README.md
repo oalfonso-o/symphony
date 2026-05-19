@@ -65,6 +65,27 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
+### Huekin fork shortcut
+
+This fork includes a convenience target for the local Huekin workflow:
+
+```bash
+git clone git@github.com:oalfonso-o/symphony.git ~/pipprojects/symphony
+cd ~/pipprojects/symphony
+cp .env.example .env
+# Edit .env and set LINEAR_API_KEY.
+make setup
+make build
+make run
+```
+
+`make run` loads local settings from `.env`, which is intentionally ignored by Git.
+`.env.example` is tracked as the template. Override values from the command line when needed:
+
+```bash
+make run PORT=4001 WORKFLOW=/path/to/WORKFLOW.md
+```
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
