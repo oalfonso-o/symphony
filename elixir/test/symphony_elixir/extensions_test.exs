@@ -356,7 +356,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "recent_events" => []
                }
              ],
              "retrying" => [
@@ -401,7 +402,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+               "recent_events" => []
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
@@ -547,6 +549,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
+    assert html =~ "Show details"
     assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
@@ -554,6 +557,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    expanded_html =
+      view
+      |> element("button[phx-click='toggle-issue']", "Show details")
+      |> render_click()
+
+    assert expanded_html =~ "Recent Codex events"
+    assert expanded_html =~ "Workspace"
+    assert expanded_html =~ "thread-http"
+    assert expanded_html =~ "MT-HTTP API payload"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -581,6 +594,25 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_input_tokens: 10,
           codex_output_tokens: 12,
           codex_total_tokens: 22,
+          codex_events: [
+            %{
+              event: :notification,
+              timestamp: DateTime.utc_now(),
+              message: %{
+                event: :notification,
+                message: %{
+                  payload: %{
+                    "method" => "codex/event/agent_reasoning",
+                    "params" => %{
+                      "msg" => %{
+                        "payload" => %{"summaryText" => "checking project guidelines"}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
           started_at: DateTime.utc_now()
         }
       ])
@@ -592,7 +624,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     StatusDashboard.notify_update()
 
     assert_eventually(fn ->
-      render(view) =~ "agent message content streaming: structured update"
+      html = render(view)
+
+      html =~ "agent message content streaming: structured update" and
+        html =~ "reasoning update: checking project guidelines"
     end)
   end
 
@@ -699,6 +734,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
+          codex_events: [],
           started_at: DateTime.utc_now()
         }
       ],

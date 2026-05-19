@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @codex_event_history_limit 100
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -732,6 +733,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
+            codex_events: [],
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
@@ -1136,6 +1138,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          codex_events: Map.get(metadata, :codex_events, []),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1193,6 +1196,7 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+    codex_events = append_codex_event(Map.get(running_entry, :codex_events, []), update)
 
     {
       Map.merge(running_entry, %{
@@ -1207,11 +1211,31 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
+        codex_events: codex_events,
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       }),
       token_delta
     }
   end
+
+  defp append_codex_event(events, %{event: event} = update) when is_list(events) do
+    timestamp = Map.get(update, :timestamp) || DateTime.utc_now()
+
+    appended =
+      events ++
+        [
+          %{
+            event: event,
+            timestamp: timestamp,
+            message: summarize_codex_update(update)
+          }
+        ]
+
+    overflow = max(length(appended) - @codex_event_history_limit, 0)
+    Enum.drop(appended, overflow)
+  end
+
+  defp append_codex_event(events, _update) when is_list(events), do: events
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),

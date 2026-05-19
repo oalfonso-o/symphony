@@ -14,6 +14,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:expanded_issues, MapSet.new())
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -35,6 +36,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
      socket
      |> assign(:payload, load_payload())
      |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_event("toggle-issue", %{"issue" => issue_identifier}, socket) do
+    expanded_issues = socket.assigns.expanded_issues
+
+    expanded_issues =
+      if MapSet.member?(expanded_issues, issue_identifier) do
+        MapSet.delete(expanded_issues, issue_identifier)
+      else
+        MapSet.put(expanded_issues, issue_identifier)
+      end
+
+    {:noreply, assign(socket, :expanded_issues, expanded_issues)}
   end
 
   @impl true
@@ -149,57 +164,110 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.running}>
-                    <td>
-                      <div class="issue-stack">
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.state)}>
-                        <%= entry.state %>
-                      </span>
-                    </td>
-                    <td>
-                      <div class="session-stack">
-                        <%= if entry.session_id do %>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            data-label="Copy ID"
-                            data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                          >
-                            Copy ID
-                          </button>
-                        <% else %>
-                          <span class="muted">n/a</span>
-                        <% end %>
-                      </div>
-                    </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
-                    <td>
-                      <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                        <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
-                          <% end %>
+                  <%= for entry <- @payload.running do %>
+                    <tr>
+                      <td>
+                        <div class="issue-stack">
+                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <div class="link-row">
+                            <button
+                              type="button"
+                              class="subtle-button"
+                              phx-click="toggle-issue"
+                              phx-value-issue={entry.issue_identifier}
+                            >
+                              <%= if expanded_issue?(@expanded_issues, entry.issue_identifier), do: "Hide details", else: "Show details" %>
+                            </button>
+                            <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <span class={state_badge_class(entry.state)}>
+                          <%= entry.state %>
                         </span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="token-stack numeric">
-                        <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
-                      </div>
-                    </td>
-                  </tr>
+                      </td>
+                      <td>
+                        <div class="session-stack">
+                          <%= if entry.session_id do %>
+                            <button
+                              type="button"
+                              class="subtle-button"
+                              data-label="Copy ID"
+                              data-copy={entry.session_id}
+                              onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                            >
+                              Copy ID
+                            </button>
+                          <% else %>
+                            <span class="muted">n/a</span>
+                          <% end %>
+                        </div>
+                      </td>
+                      <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
+                      <td>
+                        <div class="detail-stack">
+                          <span
+                            class="event-text"
+                            title={entry.last_message || to_string(entry.last_event || "n/a")}
+                          ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                          <span class="muted event-meta">
+                            <%= entry.last_event || "n/a" %>
+                            <%= if entry.last_event_at do %>
+                              · <span class="mono numeric"><%= entry.last_event_at %></span>
+                            <% end %>
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <div class="token-stack numeric">
+                          <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
+                          <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr :if={expanded_issue?(@expanded_issues, entry.issue_identifier)} class="expanded-row">
+                      <td colspan="6">
+                        <div class="issue-detail-panel">
+                          <div class="detail-grid">
+                            <div>
+                              <span class="detail-label">Workspace</span>
+                              <span class="mono detail-value"><%= entry.workspace_path || "n/a" %></span>
+                            </div>
+                            <div>
+                              <span class="detail-label">Session</span>
+                              <span class="mono detail-value"><%= entry.session_id || "n/a" %></span>
+                            </div>
+                            <div>
+                              <span class="detail-label">Last event</span>
+                              <span class="detail-value"><%= entry.last_message || "n/a" %></span>
+                            </div>
+                            <div>
+                              <span class="detail-label">JSON</span>
+                              <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}><%= entry.issue_identifier %> API payload</a>
+                            </div>
+                          </div>
+
+                          <div class="event-log">
+                            <div class="event-log-header">
+                              <span>Recent Codex events</span>
+                              <span class="muted"><%= length(recent_events_for_display(entry.recent_events)) %> shown</span>
+                            </div>
+                            <%= if (entry.recent_events || []) == [] do %>
+                              <p class="empty-state">No Codex events captured yet.</p>
+                            <% else %>
+                              <ol class="event-list">
+                                <li :for={event <- recent_events_for_display(entry.recent_events)} class="event-row">
+                                  <time class="mono event-time"><%= event.at || "n/a" %></time>
+                                  <span class="event-summary"><%= event.message || to_string(event.event || "n/a") %></span>
+                                </li>
+                              </ol>
+                            <% end %>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  <% end %>
                 </tbody>
               </table>
             </div>
@@ -308,6 +376,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp expanded_issue?(expanded_issues, issue_identifier) do
+    MapSet.member?(expanded_issues, issue_identifier)
+  end
+
+  defp recent_events_for_display(events) when is_list(events) do
+    events
+    |> Enum.reverse()
+    |> Enum.take(30)
+  end
+
+  defp recent_events_for_display(_events), do: []
 
   defp state_badge_class(state) do
     base = "state-badge"

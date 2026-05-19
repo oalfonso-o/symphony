@@ -99,6 +99,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              message: %{method: "some-event"},
              timestamp: now
            }
+
+    assert snapshot_entry.codex_events == [
+             %{
+               event: :session_started,
+               message: %{event: :session_started, message: nil, timestamp: now},
+               timestamp: now
+             },
+             %{
+               event: :notification,
+               message: %{event: :notification, message: %{method: "some-event"}, timestamp: now},
+               timestamp: now
+             }
+           ]
   end
 
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do

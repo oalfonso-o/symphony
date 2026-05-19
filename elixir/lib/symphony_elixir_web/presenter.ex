@@ -76,7 +76,7 @@ defmodule SymphonyElixirWeb.Presenter do
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
       logs: %{
-        codex_session_logs: []
+        codex_session_logs: (running && recent_events_payload(running)) || []
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,
@@ -112,7 +112,8 @@ defmodule SymphonyElixirWeb.Presenter do
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
-      }
+      },
+      recent_events: recent_events_payload(entry)
     }
   end
 
@@ -143,7 +144,8 @@ defmodule SymphonyElixirWeb.Presenter do
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,
         total_tokens: running.codex_total_tokens
-      }
+      },
+      recent_events: recent_events_payload(running)
     }
   end
 
@@ -168,15 +170,35 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp recent_events_payload(running) do
-    [
-      %{
-        at: iso8601(running.last_codex_timestamp),
-        event: running.last_codex_event,
-        message: summarize_message(running.last_codex_message)
-      }
-    ]
-    |> Enum.reject(&is_nil(&1.at))
+    events =
+      running
+      |> Map.get(:codex_events, [])
+      |> Enum.map(&codex_event_payload/1)
+      |> Enum.reject(&is_nil(&1.at))
+
+    if events == [] do
+      [
+        %{
+          at: iso8601(running.last_codex_timestamp),
+          event: running.last_codex_event,
+          message: summarize_message(running.last_codex_message)
+        }
+      ]
+      |> Enum.reject(&is_nil(&1.at))
+    else
+      events
+    end
   end
+
+  defp codex_event_payload(%{event: event, timestamp: timestamp, message: message}) do
+    %{
+      at: iso8601(timestamp),
+      event: event,
+      message: summarize_message(message)
+    }
+  end
+
+  defp codex_event_payload(_event), do: %{at: nil, event: nil, message: nil}
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
