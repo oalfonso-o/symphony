@@ -181,6 +181,12 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
+## Dispatch Scheduling
+
+Linear workflows may use `epic:*` labels to keep active work focused without
+locking all available agents to one epic. The runtime contract is documented in
+[`docs/epic_aware_scheduling.md`](docs/epic_aware_scheduling.md).
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
