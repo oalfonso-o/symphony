@@ -374,7 +374,13 @@ defmodule SymphonyElixir.Orchestrator do
   @doc false
   @spec sort_issues_for_dispatch_for_test([Issue.t()]) :: [Issue.t()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
-    sort_issues_for_dispatch(issues)
+    sort_issues_for_dispatch(issues, %{})
+  end
+
+  @doc false
+  @spec sort_issues_for_dispatch_for_test([Issue.t()], map()) :: [Issue.t()]
+  def sort_issues_for_dispatch_for_test(issues, running) when is_list(issues) and is_map(running) do
+    sort_issues_for_dispatch(issues, running)
   end
 
   @doc false
@@ -754,7 +760,8 @@ defmodule SymphonyElixir.Orchestrator do
     terminal_states = terminal_state_set()
 
     issues
-    |> sort_issues_for_dispatch()
+    |> Enum.filter(&should_dispatch_issue?(&1, state, active_states, terminal_states))
+    |> sort_issues_for_dispatch(state.running)
     |> Enum.reduce(state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
         dispatch_issue(state_acc, issue)
@@ -764,14 +771,97 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
-  defp sort_issues_for_dispatch(issues) when is_list(issues) do
-    Enum.sort_by(issues, fn
-      %Issue{} = issue ->
-        {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
+  defp sort_issues_for_dispatch(issues, running) when is_list(issues) and is_map(running) do
+    running_epic_labels = running_epic_label_set(running)
+    {valid_epic_issues, malformed_issues} = Enum.split_with(issues, &(valid_epic_label(&1) != nil))
 
-      _ ->
-        {priority_rank(nil), issue_created_at_sort_key(nil), ""}
+    valid_epic_issues
+    |> Enum.group_by(&valid_epic_label/1)
+    |> Enum.sort_by(fn {epic_label, bucket_issues} ->
+      {
+        epic_running_rank(epic_label, running_epic_labels),
+        best_issue_dispatch_sort_key(bucket_issues),
+        epic_label
+      }
     end)
+    |> Enum.flat_map(fn {_epic_label, bucket_issues} ->
+      Enum.sort_by(bucket_issues, &issue_dispatch_sort_key/1)
+    end)
+    |> Kernel.++(Enum.sort_by(malformed_issues, &issue_dispatch_sort_key/1))
+  end
+
+  defp epic_running_rank(epic_label, running_epic_labels) do
+    if MapSet.member?(running_epic_labels, epic_label), do: 0, else: 1
+  end
+
+  defp running_epic_label_set(running) when is_map(running) do
+    running
+    |> Map.values()
+    |> Enum.flat_map(&running_entry_epic_labels/1)
+    |> MapSet.new()
+  end
+
+  defp running_entry_epic_labels(%{issue: %Issue{} = issue}) do
+    issue
+    |> valid_epic_label()
+    |> List.wrap()
+  end
+
+  defp running_entry_epic_labels(%Issue{} = issue) do
+    issue
+    |> valid_epic_label()
+    |> List.wrap()
+  end
+
+  defp running_entry_epic_labels(_running_entry), do: []
+
+  defp best_issue_dispatch_sort_key(issues) do
+    case issues do
+      [] ->
+        issue_dispatch_sort_key(nil)
+
+      issues ->
+        issues
+        |> Enum.map(&issue_dispatch_sort_key/1)
+        |> Enum.min()
+    end
+  end
+
+  defp issue_dispatch_sort_key(%Issue{} = issue) do
+    {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
+  end
+
+  defp issue_dispatch_sort_key(_issue) do
+    {priority_rank(nil), issue_created_at_sort_key(nil), ""}
+  end
+
+  defp valid_epic_label(%Issue{} = issue) do
+    case epic_labels(issue) do
+      [epic_label] -> epic_label
+      _ -> nil
+    end
+  end
+
+  defp valid_epic_label(_issue), do: nil
+
+  defp epic_labels(%Issue{} = issue) do
+    issue
+    |> Issue.label_names()
+    |> Enum.map(&normalize_epic_label/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_epic_label(label) do
+    normalized =
+      label
+      |> to_string()
+      |> String.trim()
+      |> String.downcase()
+
+    if String.starts_with?(normalized, "epic:") and normalized != "epic:" do
+      normalized
+    end
   end
 
   defp priority_rank(priority) when is_integer(priority) and priority in 1..4, do: priority

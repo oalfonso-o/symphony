@@ -496,6 +496,141 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(sorted, & &1.identifier) == ["MT-200", "MT-201", "MT-199"]
   end
 
+  test "orchestrator groups valid epic buckets by each bucket's best issue" do
+    alpha_best =
+      dispatch_issue("MT-300",
+        priority: 2,
+        created_at: ~U[2026-01-01 00:00:00Z],
+        labels: ["epic:alpha"]
+      )
+
+    alpha_second =
+      dispatch_issue("MT-301",
+        priority: 3,
+        created_at: ~U[2026-01-02 00:00:00Z],
+        labels: ["epic:alpha"]
+      )
+
+    beta_best =
+      dispatch_issue("MT-302",
+        priority: 1,
+        created_at: ~U[2026-02-01 00:00:00Z],
+        labels: ["epic:beta"]
+      )
+
+    beta_second =
+      dispatch_issue("MT-303",
+        priority: 4,
+        created_at: ~U[2026-02-02 00:00:00Z],
+        labels: ["epic:beta"]
+      )
+
+    sorted =
+      Orchestrator.sort_issues_for_dispatch_for_test([
+        alpha_second,
+        beta_second,
+        alpha_best,
+        beta_best
+      ])
+
+    assert issue_identifiers(sorted) == ["MT-302", "MT-303", "MT-300", "MT-301"]
+  end
+
+  test "orchestrator preserves per-issue order inside an epic bucket" do
+    older_normal =
+      dispatch_issue("MT-310",
+        priority: 3,
+        created_at: ~U[2026-01-01 00:00:00Z],
+        labels: ["epic:alpha"]
+      )
+
+    newer_normal =
+      dispatch_issue("MT-311",
+        priority: 3,
+        created_at: ~U[2026-01-02 00:00:00Z],
+        labels: ["epic:alpha"]
+      )
+
+    high_priority =
+      dispatch_issue("MT-312",
+        priority: 2,
+        created_at: ~U[2026-01-03 00:00:00Z],
+        labels: ["epic:alpha"]
+      )
+
+    sorted =
+      Orchestrator.sort_issues_for_dispatch_for_test([
+        newer_normal,
+        older_normal,
+        high_priority
+      ])
+
+    assert issue_identifiers(sorted) == ["MT-312", "MT-310", "MT-311"]
+  end
+
+  test "orchestrator places malformed epic candidates after valid buckets" do
+    no_epic =
+      dispatch_issue("MT-400",
+        priority: 1,
+        created_at: ~U[2026-01-01 00:00:00Z],
+        labels: []
+      )
+
+    multi_epic =
+      dispatch_issue("MT-401",
+        priority: 1,
+        created_at: ~U[2026-01-02 00:00:00Z],
+        labels: ["epic:alpha", "epic:beta"]
+      )
+
+    valid_epic =
+      dispatch_issue("MT-402",
+        priority: 4,
+        created_at: ~U[2026-01-03 00:00:00Z],
+        labels: ["epic:gamma"]
+      )
+
+    sorted =
+      Orchestrator.sort_issues_for_dispatch_for_test([
+        multi_epic,
+        no_epic,
+        valid_epic
+      ])
+
+    assert issue_identifiers(sorted) == ["MT-402", "MT-400", "MT-401"]
+  end
+
+  test "orchestrator prefers a running epic that still has candidates" do
+    running_issue =
+      dispatch_issue("MT-RUN",
+        priority: 4,
+        created_at: ~U[2026-01-01 00:00:00Z],
+        labels: ["epic:beta"]
+      )
+
+    beta_candidate =
+      dispatch_issue("MT-500",
+        priority: 4,
+        created_at: ~U[2026-01-02 00:00:00Z],
+        labels: ["epic:beta"]
+      )
+
+    alpha_candidate =
+      dispatch_issue("MT-501",
+        priority: 1,
+        created_at: ~U[2026-01-03 00:00:00Z],
+        labels: ["epic:alpha"]
+      )
+
+    sorted =
+      Orchestrator.sort_issues_for_dispatch_for_test(
+        [alpha_candidate, beta_candidate],
+        %{"running-beta" => %{issue: running_issue}}
+      )
+
+    assert issue_identifiers(sorted) == ["MT-500", "MT-501"]
+  end
+
   test "active issue with non-terminal blocker is not dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
@@ -1324,5 +1459,21 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp dispatch_issue(identifier, attrs) do
+    %Issue{
+      id: Keyword.get(attrs, :id, identifier),
+      identifier: identifier,
+      title: Keyword.get(attrs, :title, identifier),
+      state: Keyword.get(attrs, :state, "Ready for Agent"),
+      priority: Keyword.get(attrs, :priority),
+      created_at: Keyword.get(attrs, :created_at),
+      labels: Keyword.get(attrs, :labels, [])
+    }
+  end
+
+  defp issue_identifiers(issues) do
+    Enum.map(issues, & &1.identifier)
   end
 end
