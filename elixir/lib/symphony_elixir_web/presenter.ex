@@ -68,22 +68,14 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry, blocked),
       status: issue_status(running, retry, blocked),
-      workspace: %{
-        path: workspace_path(issue_identifier, running, retry, blocked),
-        host: workspace_host(running, retry, blocked)
-      },
-      attempts: %{
-        restart_count: restart_count(retry),
-        current_retry_attempt: retry_attempt(retry)
-      },
-      running: running && running_issue_payload(running),
-      retry: retry && retry_issue_payload(retry),
-      blocked: blocked && blocked_issue_payload(blocked),
-      logs: %{
-        codex_session_logs: (running && recent_events_payload(running)) || []
-      },
-      recent_events: recent_events_payload(running || blocked),
-      last_error: (blocked && blocked.error) || (retry && retry.error),
+      workspace: workspace_payload(issue_identifier, running, retry, blocked),
+      attempts: attempts_payload(retry),
+      running: running_payload(running),
+      retry: retry_payload(retry),
+      blocked: blocked_payload(blocked),
+      logs: logs_payload(running),
+      recent_events: recent_events_payload(active_event_entry(running, blocked)),
+      last_error: last_error(blocked, retry),
       tracked: %{}
     }
   end
@@ -98,6 +90,39 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(running, _retry, _blocked) when not is_nil(running), do: "running"
   defp issue_status(nil, retry, _blocked) when not is_nil(retry), do: "retrying"
   defp issue_status(nil, nil, _blocked), do: "blocked"
+
+  defp workspace_payload(issue_identifier, running, retry, blocked) do
+    %{
+      path: workspace_path(issue_identifier, running, retry, blocked),
+      host: workspace_host(running, retry, blocked)
+    }
+  end
+
+  defp attempts_payload(retry) do
+    %{
+      restart_count: restart_count(retry),
+      current_retry_attempt: retry_attempt(retry)
+    }
+  end
+
+  defp running_payload(nil), do: nil
+  defp running_payload(running), do: running_issue_payload(running)
+
+  defp retry_payload(nil), do: nil
+  defp retry_payload(retry), do: retry_issue_payload(retry)
+
+  defp blocked_payload(nil), do: nil
+  defp blocked_payload(blocked), do: blocked_issue_payload(blocked)
+
+  defp logs_payload(nil), do: %{codex_session_logs: []}
+  defp logs_payload(running), do: %{codex_session_logs: recent_events_payload(running)}
+
+  defp active_event_entry(nil, blocked), do: blocked
+  defp active_event_entry(running, _blocked), do: running
+
+  defp last_error(%{error: error}, _retry), do: error
+  defp last_error(nil, %{error: error}), do: error
+  defp last_error(nil, nil), do: nil
 
   defp running_entry_payload(entry) do
     %{
