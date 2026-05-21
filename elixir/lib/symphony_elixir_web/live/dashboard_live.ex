@@ -7,6 +7,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @stream_labels %{
+    "agent message streaming" => "Agent message",
+    "agent message content streaming" => "Agent message",
+    "reasoning summary streaming" => "Reasoning",
+    "reasoning text streaming" => "Reasoning",
+    "reasoning streaming" => "Reasoning",
+    "reasoning content streaming" => "Reasoning",
+    "plan streaming" => "Plan",
+    "command output streaming" => "Command output",
+    "file change output streaming" => "File change output"
+  }
 
   @impl true
   def mount(_params, _session, socket) do
@@ -209,8 +220,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <div class="detail-stack">
                           <span
                             class="event-text"
-                            title={entry.last_message || to_string(entry.last_event || "n/a")}
-                          ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                            title={display_last_message(entry)}
+                          ><%= display_last_message(entry) %></span>
                           <span class="muted event-meta">
                             <%= entry.last_event || "n/a" %>
                             <%= if entry.last_event_at do %>
@@ -240,7 +251,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                             </div>
                             <div>
                               <span class="detail-label">Last event</span>
-                              <span class="detail-value"><%= entry.last_message || "n/a" %></span>
+                              <span class="detail-value"><%= display_last_message(entry) %></span>
                             </div>
                             <div>
                               <span class="detail-label">JSON</span>
@@ -383,11 +394,89 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp recent_events_for_display(events) when is_list(events) do
     events
+    |> compact_streaming_events()
     |> Enum.reverse()
     |> Enum.take(30)
   end
 
   defp recent_events_for_display(_events), do: []
+
+  defp display_last_message(entry) do
+    case recent_events_for_display(Map.get(entry, :recent_events, [])) do
+      [%{message: message} | _] when is_binary(message) and message != "" ->
+        message
+
+      _ ->
+        entry.last_message || to_string(entry.last_event || "n/a")
+    end
+  end
+
+  defp compact_streaming_events(events) do
+    {compacted, streaming_group} =
+      Enum.reduce(events, {[], nil}, fn event, {compacted, streaming_group} ->
+        case streaming_event(event) do
+          {:ok, label, chunk} ->
+            append_streaming_event(compacted, streaming_group, event, label, chunk)
+
+          :error ->
+            compacted = flush_streaming_group(compacted, streaming_group)
+            {compacted ++ [event], nil}
+        end
+      end)
+
+    flush_streaming_group(compacted, streaming_group)
+  end
+
+  defp append_streaming_event(compacted, %{label: label} = group, event, label, chunk) do
+    group = %{group | at: event.at || group.at, chunks: group.chunks ++ [chunk], count: group.count + 1}
+    {compacted, group}
+  end
+
+  defp append_streaming_event(compacted, streaming_group, event, label, chunk) do
+    compacted = flush_streaming_group(compacted, streaming_group)
+    {compacted, %{at: event.at, event: event.event, label: label, chunks: [chunk], count: 1}}
+  end
+
+  defp flush_streaming_group(compacted, nil), do: compacted
+
+  defp flush_streaming_group(compacted, %{at: at, event: event, label: label, chunks: chunks, count: count}) do
+    message =
+      case compact_streaming_text(chunks) do
+        "" -> "#{label} streaming (#{count} chunks)"
+        text -> "#{label}: #{text}"
+      end
+
+    compacted ++ [%{at: at, event: event, message: message}]
+  end
+
+  defp streaming_event(%{message: message}) when is_binary(message) do
+    case String.split(message, ": ", parts: 2) do
+      [prefix, chunk] -> stream_label(prefix, chunk)
+      [prefix] -> stream_label(prefix, "")
+    end
+  end
+
+  defp streaming_event(_event), do: :error
+
+  defp stream_label(prefix, chunk) do
+    case Map.fetch(@stream_labels, prefix) do
+      {:ok, label} -> {:ok, label, chunk}
+      :error -> :error
+    end
+  end
+
+  defp compact_streaming_text(chunks) do
+    chunks
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" ")
+    |> String.replace(~r/\s+([.,;:!?)}\]])/, "\\1")
+    |> String.replace(~r/([({\[])\s+/, "\\1")
+    |> String.replace(~r/\s+(['’])\s*/, "\\1")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
 
   defp state_badge_class(state) do
     base = "state-badge"

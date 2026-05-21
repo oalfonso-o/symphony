@@ -611,6 +611,58 @@ defmodule SymphonyElixir.ExtensionsTest do
                   }
                 }
               }
+            },
+            %{
+              event: :notification,
+              timestamp: DateTime.utc_now(),
+              message: %{
+                event: :notification,
+                message: %{
+                  payload: %{
+                    "method" => "codex/event/agent_message_delta",
+                    "params" => %{"msg" => %{"payload" => %{"delta" => "I"}}}
+                  }
+                }
+              }
+            },
+            %{
+              event: :notification,
+              timestamp: DateTime.utc_now(),
+              message: %{
+                event: :notification,
+                message: %{
+                  payload: %{
+                    "method" => "codex/event/agent_message_delta",
+                    "params" => %{"msg" => %{"payload" => %{"delta" => "am"}}}
+                  }
+                }
+              }
+            },
+            %{
+              event: :notification,
+              timestamp: DateTime.utc_now(),
+              message: %{
+                event: :notification,
+                message: %{
+                  payload: %{
+                    "method" => "codex/event/agent_message_delta",
+                    "params" => %{"msg" => %{"payload" => %{"delta" => "checking"}}}
+                  }
+                }
+              }
+            },
+            %{
+              event: :notification,
+              timestamp: DateTime.utc_now(),
+              message: %{
+                event: :notification,
+                message: %{
+                  payload: %{
+                    "method" => "codex/event/agent_message_delta",
+                    "params" => %{"msg" => %{"payload" => %{"delta" => "."}}}
+                  }
+                }
+              }
             }
           ],
           started_at: DateTime.utc_now()
@@ -626,8 +678,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       html = render(view)
 
-      html =~ "agent message content streaming: structured update" and
-        html =~ "reasoning update: checking project guidelines"
+      html =~ "reasoning update: checking project guidelines" and
+        html =~ "Agent message: I am checking." and
+        html =~ "2 shown" and
+        not (html =~ "agent message streaming: I")
     end)
   end
 
