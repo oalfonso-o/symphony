@@ -266,7 +266,8 @@ Fields:
 - `poll_interval_ms` (current effective poll interval)
 - `max_concurrent_agents` (current effective global concurrency limit)
 - `running` (map `issue_id -> running entry`)
-- `claimed` (set of issue IDs reserved/running/retrying)
+- `claimed` (set of issue IDs reserved/running/retrying/blocked)
+- `blocked` (map `issue_id -> blocked entry for sessions waiting on operator input)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
 - `completed` (set of issue IDs; bookkeeping only, not dispatch gating)
 - `codex_totals` (aggregate tokens + runtime seconds)
@@ -610,7 +611,7 @@ claim state.
 
 2. `Claimed`
    - Orchestrator has reserved the issue to prevent duplicate dispatch.
-   - In practice, claimed issues are either `Running` or `RetryQueued`.
+   - In practice, claimed issues are `Running`, `RetryQueued`, or `Blocked`.
 
 3. `Running`
    - Worker task exists and the issue is tracked in `running` map.
@@ -618,7 +619,14 @@ claim state.
 4. `RetryQueued`
    - Worker is not running, but a retry timer exists in `retry_attempts`.
 
-5. `Released`
+5. `Blocked`
+   - Worker is not running because the coding-agent session reported required operator input,
+     approval, or MCP elicitation.
+   - The issue remains claimed and is tracked in `blocked`.
+   - Blocked state is in memory only; if the orchestrator restarts, the issue can become a normal
+     dispatch candidate again if its tracker state is still active.
+
+6. `Released`
    - Claim removed because issue is terminal, non-active, missing, or retry path completed without
      re-dispatch.
 
@@ -705,11 +713,13 @@ The effective poll interval SHOULD be updated when workflow config changes are r
 Tick sequence:
 
 1. Reconcile running issues.
-2. Run dispatch preflight validation.
-3. Fetch candidate issues from tracker using active states.
-4. Sort issues by dispatch priority.
-5. Dispatch eligible issues while slots remain.
-6. Notify observability/status consumers of state changes.
+2. Reconcile blocked issues.
+3. Run dispatch preflight validation.
+4. Fetch candidate issues from tracker using active states.
+5. Remove issues that are not currently dispatch-eligible.
+6. Sort the remaining candidates by epic-aware dispatch priority.
+7. Dispatch eligible issues while slots remain.
+8. Notify observability/status consumers of state changes.
 
 If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens
 first.
@@ -722,12 +732,22 @@ An issue is dispatch-eligible only if all are true:
 - Its state is in `active_states` and not in `terminal_states`.
 - It is not already in `running`.
 - It is not already in `claimed`.
+- It is not already in `blocked`.
 - Global concurrency slots are available.
 - Per-state concurrency slots are available.
 - Blocker rule for `Todo` state passes:
   - If the issue state is `Todo`, do not dispatch when any blocker is non-terminal.
 
-Sorting order (stable intent):
+Epic-aware sorting order (stable intent):
+
+1. Remove candidates without exactly one non-empty `epic:*` label from the valid epic bucket set.
+2. Valid epic buckets with already running active work sort before other valid epic buckets.
+3. Remaining valid epic buckets sort by the best issue in each bucket.
+4. Issues without an `epic:*` label or with more than one distinct `epic:*` label sort after all
+   valid epic buckets.
+
+The per-issue sort key, used inside buckets, to rank bucket best issues, and for malformed fallback
+candidates, is:
 
 1. `priority` ascending (1..4 are preferred; null/unknown sorts last)
 2. `created_at` oldest first
@@ -1394,7 +1414,8 @@ Minimum endpoints:
       "generated_at": "2026-02-24T20:15:30Z",
       "counts": {
         "running": 2,
-        "retrying": 1
+        "retrying": 1,
+        "blocked": 1
       },
       "running": [
         {
@@ -1421,6 +1442,19 @@ Minimum endpoints:
           "attempt": 3,
           "due_at": "2026-02-24T20:16:00Z",
           "error": "no available orchestrator slots"
+        }
+      ],
+      "blocked": [
+        {
+          "issue_id": "ghi789",
+          "issue_identifier": "MT-651",
+          "state": "In Progress",
+          "error": "codex turn requires operator input",
+          "session_id": "thread-2-turn-1",
+          "blocked_at": "2026-02-24T20:13:00Z",
+          "last_event": "turn_input_required",
+          "last_message": "turn blocked: waiting for user input",
+          "last_event_at": "2026-02-24T20:13:00Z"
         }
       ],
       "codex_totals": {
@@ -1465,6 +1499,7 @@ Minimum endpoints:
         }
       },
       "retry": null,
+      "blocked": null,
       "logs": {
         "codex_session_logs": [
           {
@@ -1710,6 +1745,7 @@ function start_service():
 ```text
 on_tick(state):
   state = reconcile_running_issues(state)
+  state = reconcile_blocked_issues(state)
 
   validation = validate_dispatch_config()
   if validation is not ok:
@@ -1725,7 +1761,9 @@ on_tick(state):
     schedule_tick(state.poll_interval_ms)
     return state
 
-  for issue in sort_for_dispatch(issues):
+  runnable_issues = filter_dispatch_eligible(issues, state)
+
+  for issue in sort_for_dispatch(runnable_issues, state.running):
     if no_available_slots(state):
       break
 
@@ -1978,21 +2016,30 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
-- Dispatch sort order is priority then oldest creation time
+- Dispatch computes epic-aware ordering after removing non-runnable candidates
+- Dispatch prefers valid `epic:*` buckets with already running active work, then valid buckets by
+  each bucket's best issue, then malformed no-epic or multi-epic candidates
+- Per-issue ordering remains priority, oldest creation time, then identifier
 - `Todo` issue with non-terminal blockers is not eligible
 - `Todo` issue with terminal blockers is eligible
+- Blocked input-required issues remain claimed and are not dispatch-eligible
 - Active-state issue refresh updates running entry state
+- Blocked issue refresh releases the claim when the issue becomes terminal, non-active, missing, or
+  unroutable
 - Non-active state stops running agent without workspace cleanup
 - Terminal state stops running agent and cleans workspace
 - Reconciliation with no running issues is a no-op
 - Normal worker exit schedules a short continuation retry (attempt 1)
 - Abnormal worker exit increments retries with 10s-based exponential backoff
+- Worker exits after input-required, approval-required, or MCP-elicitation outcomes move the issue
+  into blocked state instead of retrying immediately
 - Retry backoff cap uses configured `agent.max_retry_backoff_ms`
 - Retry queue entries include attempt, due time, identifier, and error
-- Stall detection kills stalled sessions and schedules retry
+- Stall detection kills stalled sessions and schedules retry, except stalled sessions already known
+  to require operator input become blocked
 - Slot exhaustion requeues retries with explicit error reason
-- If a snapshot API is implemented, it returns running rows, retry rows, token totals, and rate
-  limits
+- If a snapshot API is implemented, it returns running rows, retry rows, blocked rows, token totals,
+  and rate limits
 - If a snapshot API is implemented, timeout/unavailable cases are surfaced
 
 ### 17.5 Coding-Agent App-Server Client
