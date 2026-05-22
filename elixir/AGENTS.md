@@ -2,6 +2,9 @@
 
 This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Codex in app-server mode.
 
+Repository-level local Codex workflow rules live in `../AGENTS.md`. Follow
+those rules before starting interactive local work in this checkout.
+
 ## Environment
 
 - Elixir: `1.19.x` (OTP 28) via `mise`.
