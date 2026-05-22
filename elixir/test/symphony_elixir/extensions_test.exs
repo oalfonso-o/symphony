@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.Runtime.SummaryStore
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -712,6 +713,45 @@ defmodule SymphonyElixir.ExtensionsTest do
         html =~ "Agent message: I am checking." and
         html =~ "2 shown" and
         not (html =~ "agent message streaming: I")
+    end)
+
+    summary_path =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-dashboard-summary-#{System.unique_integer([:positive])}.json"
+      )
+
+    on_exit(fn -> File.rm(summary_path) end)
+
+    assert {:ok, _summary} =
+             SummaryStore.write(summary_path, %{
+               cursor: 4,
+               status: "ready",
+               segments: [
+                 %{
+                   started_at: "2026-05-22T06:05:00Z",
+                   summary: "Spark summarized the useful operational state."
+                 }
+               ]
+             })
+
+    summarized_snapshot =
+      put_in(updated_snapshot, [:running, Access.at(0), :summary_path], summary_path)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, summarized_snapshot)
+    end)
+
+    StatusDashboard.notify_update()
+
+    assert_eventually(fn ->
+      html = render(view)
+
+      html =~ "Summary" and
+        html =~ "Spark summarized the useful operational state." and
+        html =~ "1 segments" and
+        not (html =~ "Recent Codex events") and
+        not (html =~ "2 shown")
     end)
   end
 

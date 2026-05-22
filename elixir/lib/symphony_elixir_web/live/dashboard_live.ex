@@ -385,28 +385,35 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           </div>
 
                           <div class="event-log">
-                            <div class="event-log-header">
-                              <span>Recent Codex events</span>
-                              <span class="muted"><%= length(recent_events_for_display(entry.recent_events)) %> shown</span>
-                            </div>
-                            <div :if={summary_segments(entry) != []} class="summary-log">
-                              <div :for={segment <- summary_segments(entry)} class="summary-segment">
-                                <span class="mono event-time"><%= segment.started_at || "n/a" %></span>
-                                <span><%= segment.summary %></span>
+                            <%= if summary_segments(entry) != [] do %>
+                              <div class="event-log-header">
+                                <span>Summary</span>
+                                <span class="muted"><%= length(summary_segments(entry)) %> segments</span>
                               </div>
-                            </div>
-                            <p :if={summary_failed?(entry)} class="empty-state">
-                              Summary failed: <%= opt(Map.get(entry, :summary, %{}), :status_reason, "unknown") %>
-                            </p>
-                            <%= if (entry.recent_events || []) == [] do %>
-                              <p class="empty-state">No Codex events captured yet.</p>
+                              <div class="summary-log">
+                                <div :for={segment <- summary_segments(entry)} class="summary-segment">
+                                  <span class="mono event-time"><%= segment.started_at || "n/a" %></span>
+                                  <span><%= segment.summary %></span>
+                                </div>
+                              </div>
                             <% else %>
-                              <ol class="event-list">
-                                <li :for={event <- recent_events_for_display(entry.recent_events)} class="event-row">
-                                  <time class="mono event-time"><%= event.at || "n/a" %></time>
-                                  <span class="event-summary"><%= event.message || to_string(event.event || "n/a") %></span>
-                                </li>
-                              </ol>
+                              <div class="event-log-header">
+                                <span>Recent Codex events</span>
+                                <span class="muted"><%= length(recent_events_for_display(entry.recent_events)) %> shown</span>
+                              </div>
+                              <p :if={summary_failed?(entry)} class="empty-state">
+                                Summary failed: <%= opt(Map.get(entry, :summary, %{}), :status_reason, "unknown") %>
+                              </p>
+                              <%= if (entry.recent_events || []) == [] do %>
+                                <p class="empty-state">No Codex events captured yet.</p>
+                              <% else %>
+                                <ol class="event-list">
+                                  <li :for={event <- recent_events_for_display(entry.recent_events)} class="event-row">
+                                    <time class="mono event-time"><%= event.at || "n/a" %></time>
+                                    <span class="event-summary"><%= event.message || to_string(event.event || "n/a") %></span>
+                                  </li>
+                                </ol>
+                              <% end %>
                             <% end %>
                           </div>
                         </div>
