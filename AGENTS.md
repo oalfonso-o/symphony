@@ -31,18 +31,21 @@ These rules apply to interactive Codex sessions in
 - Local interactive Codex work should commit directly on `main` after
   verification when the human asks for a durable local change. Keep `main`
   linear and based on current `origin/main`; rebase local commits onto
-  `origin/main` before considering the work finished.
+  `origin/main`, then run `git push origin main` before considering the work
+  finished so `origin/main` remains the integrated source of truth.
 - Local interactive Codex sessions must not use local feature branches in the
   primary checkout for parallel or experimental work. If isolation is needed,
   create a separate git worktree from current `origin/main`, use a temporary
   `codex/<short-purpose>` branch only inside that worktree, then integrate the
   finished commits back onto `main`.
-- After isolated work is integrated, remove the temporary worktree and delete
-  its temporary branch. Do not leave stale `codex/*` branches or worktrees once
-  their commits are present on `main`.
+- After isolated work is integrated into primary `main`, run
+  `git push origin main`, remove the temporary worktree, and delete its
+  temporary branch. Do not leave stale `codex/*` branches or worktrees once
+  their commits are present on `main` and `origin/main`.
 - End local Codex sessions with the primary checkout on `main`. The worktree
-  should be clean unless the final response explicitly lists remaining
-  uncommitted files and why they were left uncommitted.
+  should be clean and pushed to `origin/main` unless the final response
+  explicitly lists remaining uncommitted or unpushed work and why it was left
+  that way.
 
 ## Validation
 
