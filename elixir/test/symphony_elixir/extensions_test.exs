@@ -535,6 +535,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
+    assert dashboard_css =~ "padding: clamp(0.75rem, 1.5vw, 1.15rem);"
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
@@ -600,6 +601,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    assert String.contains?(html, "Running sessions")
+    assert String.contains?(html, "Adopted detached runs")
+    assert :binary.match(html, "Running sessions") < :binary.match(html, "Adopted detached runs")
 
     expanded_html =
       view

@@ -169,62 +169,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
         </section>
 
-        <section :if={adopted_entries(@payload) != []} class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Adopted detached runs</h2>
-              <p class="section-copy">Read-only runs recovered from local registry and tmux state.</p>
-            </div>
-          </div>
-
-          <div class="table-wrap">
-            <table class="data-table" style="min-width: 860px;">
-              <thead>
-                <tr>
-                  <th>Issue</th>
-                  <th>Status</th>
-                  <th>Runtime</th>
-                  <th>tmux</th>
-                  <th>Workspace</th>
-                  <th>Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr :for={entry <- adopted_entries(@payload)}>
-                  <td><span class="issue-id"><%= opt(entry, :issue_identifier, opt(entry, :run_id)) %></span></td>
-                  <td><span class={state_badge_class(opt(entry, :status))}><%= opt(entry, :status, "unknown") %></span></td>
-                  <td><%= opt(entry, :runtime_kind, "native") %> · <%= opt(entry, :codex_profile, "default") %></td>
-                  <td class="mono"><%= opt(entry, :tmux_target, "n/a") %></td>
-                  <td class="mono"><%= opt(entry, :workspace_path, "n/a") %></td>
-                  <td><%= opt(entry, :status_reason, "n/a") %></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
-            </div>
-          </div>
-
-          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Scheduling</h2>
-              <p class="section-copy">Latest epic focus ordering and malformed candidate counts.</p>
-            </div>
-          </div>
-
-          <pre class="code-panel"><%= pretty_value(Map.get(@payload, :scheduling)) %></pre>
-        </section>
-
         <section class="section-card">
           <div class="section-header">
             <div>
@@ -424,6 +368,62 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </table>
             </div>
           <% end %>
+        </section>
+
+        <section :if={adopted_entries(@payload) != []} class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Adopted detached runs</h2>
+              <p class="section-copy">Read-only runs recovered from local registry and tmux state.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table" style="min-width: 860px;">
+              <thead>
+                <tr>
+                  <th>Issue</th>
+                  <th>Status</th>
+                  <th>Runtime</th>
+                  <th>tmux</th>
+                  <th>Workspace</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={entry <- adopted_entries(@payload)}>
+                  <td><span class="issue-id"><%= opt(entry, :issue_identifier, opt(entry, :run_id)) %></span></td>
+                  <td><span class={state_badge_class(opt(entry, :status))}><%= opt(entry, :status, "unknown") %></span></td>
+                  <td><%= opt(entry, :runtime_kind, "native") %> · <%= opt(entry, :codex_profile, "default") %></td>
+                  <td class="mono"><%= opt(entry, :tmux_target, "n/a") %></td>
+                  <td class="mono"><%= opt(entry, :workspace_path, "n/a") %></td>
+                  <td><%= opt(entry, :status_reason, "n/a") %></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Rate limits</h2>
+              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
+            </div>
+          </div>
+
+          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Scheduling</h2>
+              <p class="section-copy">Latest epic focus ordering and malformed candidate counts.</p>
+            </div>
+          </div>
+
+          <pre class="code-panel"><%= pretty_value(Map.get(@payload, :scheduling)) %></pre>
         </section>
 
         <section class="section-card">
