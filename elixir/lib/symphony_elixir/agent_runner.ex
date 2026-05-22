@@ -30,6 +30,12 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
+    with {:ok, issue} <- move_queued_issue_to_in_progress(issue) do
+      run_prepared_issue_on_worker_host(issue, codex_update_recipient, opts, worker_host)
+    end
+  end
+
+  defp run_prepared_issue_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     case Workspace.create_for_issue(issue, worker_host) do
       {:ok, workspace} ->
         execution = Config.codex_execution_for_issue(issue, opts)
@@ -63,6 +69,34 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp move_queued_issue_to_in_progress(%Issue{id: issue_id, state: state} = issue)
+       when is_binary(issue_id) and is_binary(state) do
+    case queued_issue_target_state(state) do
+      nil ->
+        {:ok, issue}
+
+      target_state ->
+        Logger.info("Moving queued issue to #{target_state} before Codex startup for #{issue_context(issue)} current_state=#{inspect(state)}")
+
+        case Tracker.update_issue_state(issue_id, target_state) do
+          :ok -> {:ok, %{issue | state: target_state}}
+          {:error, reason} -> {:error, {:issue_state_transition_failed, state, target_state, reason}}
+        end
+    end
+  end
+
+  defp move_queued_issue_to_in_progress(issue), do: {:ok, issue}
+
+  defp queued_issue_target_state(state) do
+    normalized_state = normalize_issue_state(state)
+
+    if normalized_state in ["todo", "ready for agent"] do
+      Enum.find(Config.settings!().tracker.active_states, fn active_state ->
+        normalize_issue_state(active_state) == "in progress"
+      end)
     end
   end
 

@@ -688,6 +688,10 @@ Important nuance:
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
   coding-agent thread in the same workspace, up to `agent.max_turns`.
+- Before the first coding-agent turn, the worker SHOULD perform deterministic startup tracker
+  transitions itself when the target state is known from workflow config. In particular, if an issue
+  is in `Todo` or `Ready for Agent` and `In Progress` is configured as an active state, the worker
+  SHOULD move the issue to `In Progress` before building the first prompt.
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.

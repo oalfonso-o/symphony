@@ -171,6 +171,10 @@ Notes:
   Symphony validation.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- Before launching Codex, Symphony moves queued issues in `Todo` or `Ready for Agent` to the
+  configured `In Progress` active state when that state exists. The first Codex prompt then sees the
+  issue as already in progress, so this deterministic tracker transition does not consume model
+  tokens.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - `runtime.state_root` stores durable run registry JSON, worker JSONL event logs, tmux transport

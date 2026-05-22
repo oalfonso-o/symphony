@@ -1000,6 +1000,94 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt == "Retry #2"
   end
 
+  test "agent runner moves queued issues to In Progress before starting codex" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-start-transition-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(test_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEX_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-ready"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-ready"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEX_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEX_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_active_states: ["Ready for Agent", "In Progress"],
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        prompt: "Current status: {{ issue.state }}"
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      issue = %Issue{
+        id: "issue-ready",
+        identifier: "MT-READY",
+        title: "Start without token-heavy state transition",
+        description: "Move status before Codex sees the task",
+        state: "Ready for Agent",
+        url: "https://example.org/issues/MT-READY",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      assert_receive {:memory_tracker_state_update, "issue-ready", "In Progress"}
+
+      turn_text =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.find(&(&1["method"] == "turn/start"))
+        |> get_in(["params", "input", Access.at(0), "text"])
+
+      assert turn_text == "Current status: In Progress"
+    after
+      System.delete_env("SYMP_TEST_CODEX_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner keeps workspace after successful codex run" do
     test_root =
       Path.join(
