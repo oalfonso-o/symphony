@@ -1,10 +1,13 @@
-.PHONY: help setup build test run
+.PHONY: help all setup build test run
 
 ELIXIR_DIR := elixir
 ENV_FILE ?= $(CURDIR)/.env
 
 help:
 	@$(MAKE) -C $(ELIXIR_DIR) help
+
+all:
+	@$(MAKE) -C $(ELIXIR_DIR) all
 
 setup:
 	@$(MAKE) -C $(ELIXIR_DIR) setup

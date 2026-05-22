@@ -108,12 +108,25 @@ defmodule SymphonyElixir.TestSupport do
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
           codex_command: "codex app-server",
+          codex_default_profile: "default",
+          codex_profiles: %{},
+          codex_routes: %{},
+          codex_prompt_templates: %{},
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
           codex_turn_sandbox_policy: nil,
           codex_turn_timeout_ms: 3_600_000,
           codex_read_timeout_ms: 5_000,
           codex_stall_timeout_ms: 300_000,
+          runtime_state_root: nil,
+          runtime_tmux_enabled: false,
+          runtime_tmux_session: nil,
+          runtime_adopt_detached_runs: true,
+          runtime_stale_after_ms: 600_000,
+          runtime_drain_file: nil,
+          runtime_summary_enabled: true,
+          runtime_summary_profile: "spark",
+          runtime_summary_timeout_ms: 120_000,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -146,12 +159,25 @@ defmodule SymphonyElixir.TestSupport do
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     codex_command = Keyword.get(config, :codex_command)
+    codex_default_profile = Keyword.get(config, :codex_default_profile)
+    codex_profiles = Keyword.get(config, :codex_profiles)
+    codex_routes = Keyword.get(config, :codex_routes)
+    codex_prompt_templates = Keyword.get(config, :codex_prompt_templates)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
     codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
     codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
     codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
     codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+    runtime_state_root = Keyword.get(config, :runtime_state_root)
+    runtime_tmux_enabled = Keyword.get(config, :runtime_tmux_enabled)
+    runtime_tmux_session = Keyword.get(config, :runtime_tmux_session)
+    runtime_adopt_detached_runs = Keyword.get(config, :runtime_adopt_detached_runs)
+    runtime_stale_after_ms = Keyword.get(config, :runtime_stale_after_ms)
+    runtime_drain_file = Keyword.get(config, :runtime_drain_file)
+    runtime_summary_enabled = Keyword.get(config, :runtime_summary_enabled)
+    runtime_summary_profile = Keyword.get(config, :runtime_summary_profile)
+    runtime_summary_timeout_ms = Keyword.get(config, :runtime_summary_timeout_ms)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -188,12 +214,27 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
+        "  default_profile: #{yaml_value(codex_default_profile)}",
+        "  profiles: #{yaml_value(codex_profiles)}",
+        "  routes: #{yaml_value(codex_routes)}",
+        "  prompt_templates: #{yaml_value(codex_prompt_templates)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
         "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        runtime_yaml(%{
+          state_root: runtime_state_root,
+          tmux_enabled: runtime_tmux_enabled,
+          tmux_session: runtime_tmux_session,
+          adopt_detached_runs: runtime_adopt_detached_runs,
+          stale_after_ms: runtime_stale_after_ms,
+          drain_file: runtime_drain_file,
+          summary_enabled: runtime_summary_enabled,
+          summary_profile: runtime_summary_profile,
+          summary_timeout_ms: runtime_summary_timeout_ms
+        }),
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
@@ -254,6 +295,22 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents_per_host: #{yaml_value(max_concurrent_agents_per_host)}"
     ]
     |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join("\n")
+  end
+
+  defp runtime_yaml(runtime) do
+    [
+      "runtime:",
+      "  state_root: #{yaml_value(runtime.state_root)}",
+      "  tmux_enabled: #{yaml_value(runtime.tmux_enabled)}",
+      "  tmux_session: #{yaml_value(runtime.tmux_session)}",
+      "  adopt_detached_runs: #{yaml_value(runtime.adopt_detached_runs)}",
+      "  stale_after_ms: #{yaml_value(runtime.stale_after_ms)}",
+      "  drain_file: #{yaml_value(runtime.drain_file)}",
+      "  summary_enabled: #{yaml_value(runtime.summary_enabled)}",
+      "  summary_profile: #{yaml_value(runtime.summary_profile)}",
+      "  summary_timeout_ms: #{yaml_value(runtime.summary_timeout_ms)}"
+    ]
     |> Enum.join("\n")
   end
 

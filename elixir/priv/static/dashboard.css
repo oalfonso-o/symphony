@@ -227,6 +227,13 @@ pre,
   color: var(--muted);
 }
 
+.status-badge-warning {
+  margin-top: 0.4rem;
+  background: #fff8e6;
+  border-color: rgba(177, 121, 0, 0.22);
+  color: #8a5b00;
+}
+
 [data-phx-main].phx-connected .status-badge-live {
   display: inline-flex;
 }
@@ -453,6 +460,22 @@ pre,
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.summary-log {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbfc;
+}
+
+.summary-segment {
+  display: grid;
+  grid-template-columns: minmax(9.5rem, auto) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
 }
 
 .event-row {

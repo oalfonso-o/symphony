@@ -126,6 +126,30 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+  default_profile: strong
+  profiles:
+    strong:
+      command: codex app-server
+    spark:
+      command: codex --config 'model="gpt-5.3-codex-spark"' app-server
+      prompt_template: lean_mechanical_phase
+  routes:
+    states:
+      "Todo":
+        profile: strong
+      "In Progress":
+        profile: strong
+  prompt_templates:
+    lean_mechanical_phase: |
+      You are handling a bounded mechanical Symphony task.
+
+      Issue: {{ issue.identifier }}
+      Title: {{ issue.title }}
+      State: {{ issue.state }}
+runtime:
+  state_root: ~/code/workspaces/.symphony_runtime
+  tmux_enabled: false
+  summary_profile: spark
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -149,6 +173,21 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
+- `runtime.state_root` stores durable run registry JSON, worker JSONL event logs, tmux transport
+  files, and summary cursors. If omitted, it defaults to `.symphony_runtime` under
+  `workspace.root`.
+- `runtime.tmux_enabled` runs local Codex app-server sessions inside a project-scoped tmux session
+  while preserving the existing native app-server path as the default. SSH workers continue using
+  the native remote transport.
+- The dashboard exposes drain controls. Drain mode writes/removes `runtime.drain_file`; while active,
+  Symphony keeps existing runs visible but skips new dispatch.
+- `codex.profiles`, `codex.routes`, and `codex.prompt_templates` let workflows choose a command/model
+  and prompt budget by state or claim scope while preserving `codex.command` as the fallback for
+  older workflow files.
+- Expanded dashboard details read durable JSONL event logs and materialize persisted summary
+  segments under `runtime.state_root`. Summary work is only triggered when details are opened, runs
+  through the named `runtime.summary_profile`, and fails visibly instead of falling back to the
+  default Codex command when that profile is not configured.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch

@@ -101,14 +101,20 @@ Important boundary:
 6. `Agent Runner`
    - Creates workspace.
    - Builds prompt from issue + workflow template.
-   - Launches the coding agent app-server client.
+   - Selects the configured execution profile and prompt template for the issue route.
+   - Launches the coding agent app-server client through the active worker runtime.
    - Streams agent updates back to the orchestrator.
 
-7. `Status Surface` (OPTIONAL)
+7. `Worker Runtime`
+   - Provides the launch boundary between orchestration and concrete process management.
+   - MAY be native child-process backed or detached-process backed.
+   - Writes durable run metadata and event logs when supported by the implementation.
+
+8. `Status Surface` (OPTIONAL)
    - Presents human-readable runtime status (for example terminal output, dashboard, or other
      operator-facing view).
 
-8. `Logging`
+9. `Logging`
    - Emits structured runtime logs to one or more configured sinks.
 
 ### 3.2 Abstraction Levels
@@ -196,6 +202,10 @@ Examples:
 - active and terminal issue states
 - concurrency limits
 - coding-agent executable/args/timeouts
+- named execution profiles and profile-specific prompt templates
+- durable runtime state root
+- detached runtime settings, such as tmux session name
+- drain and summary settings
 - workspace hooks
 
 #### 4.1.4 Workspace
@@ -244,7 +254,48 @@ Fields:
 - `turn_count` (integer)
   - Number of coding-agent turns started within the current worker lifetime.
 
-#### 4.1.7 Retry Entry
+#### 4.1.7 Durable Run Metadata
+
+Implementation-defined local record for one worker run.
+
+Fields:
+
+- `run_id` (string)
+- `issue_id` (string or null)
+- `issue_identifier` (string)
+- `issue_state` (string or null)
+- `runtime_kind` (string)
+  - Example values: `native`, `tmux`.
+- `status` (string)
+  - Example values: `starting`, `running`, `completed`, `failed`, `blocked`, `stale`, `dead`.
+- `workspace_path` (string)
+- `registry_path` (string)
+- `event_log_path` (string)
+- `summary_path` (string or null)
+- `codex_profile` (string or null)
+- `prompt_template` (string or null)
+- `tmux_target` (string or null)
+- `heartbeat_at`, `started_at`, `updated_at`, `completed_at` (timestamps)
+
+Durable run metadata SHOULD be written atomically and read defensively. Implementations SHOULD treat
+malformed or missing registry files as an operator-visible classification problem, not as a service
+crash.
+
+#### 4.1.8 Worker Event Log
+
+Append-only JSONL event stream for one worker run.
+
+Fields per line:
+
+- `sequence` (integer)
+- `timestamp` (timestamp)
+- `event` (string)
+- `message` or `payload` (implementation-defined)
+
+Readers MUST tolerate missing files, partial lines, and malformed lines. Full event history SHOULD
+stay local; issue trackers SHOULD receive only compact active-run metadata or links.
+
+#### 4.1.9 Retry Entry
 
 Scheduled retry state for an issue.
 
@@ -257,7 +308,7 @@ Fields:
 - `timer_handle` (runtime-specific timer reference)
 - `error` (string or null)
 
-#### 4.1.8 Orchestrator Runtime State
+#### 4.1.10 Orchestrator Runtime State
 
 Single authoritative in-memory state owned by the orchestrator.
 

@@ -30,10 +30,39 @@ agent:
   max_turns: 20
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  default_profile: strong
+  profiles:
+    strong:
+      command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+    spark:
+      command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.3-codex-spark"' app-server
+      prompt_template: lean_mechanical_phase
+  routes:
+    states:
+      Todo:
+        profile: strong
+      In Progress:
+        profile: strong
+      Rework:
+        profile: strong
+      Merging:
+        profile: strong
+  prompt_templates:
+    lean_mechanical_phase: |
+      You are handling a bounded mechanical Symphony workflow task.
+
+      Issue: {{ issue.identifier }}
+      Title: {{ issue.title }}
+      Current status: {{ issue.state }}
+      URL: {{ issue.url }}
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+runtime:
+  state_root: ~/code/symphony-workspaces/.symphony_runtime
+  tmux_enabled: false
+  summary_profile: spark
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

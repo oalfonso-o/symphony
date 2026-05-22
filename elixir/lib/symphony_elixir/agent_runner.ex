@@ -6,10 +6,11 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.Runtime.{EventLog, Registry}
 
   @type worker_host :: String.t() | nil
 
-  @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
+  @spec run(Issue.t(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     # The orchestrator owns host retries so one worker lifetime never hops machines.
     worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
@@ -31,11 +32,30 @@ defmodule SymphonyElixir.AgentRunner do
 
     case Workspace.create_for_issue(issue, worker_host) do
       {:ok, workspace} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+        execution = Config.codex_execution_for_issue(issue, opts)
+
+        run_metadata =
+          issue
+          |> Registry.build(
+            worker_host: worker_host,
+            workspace_path: workspace,
+            codex_profile: execution.profile_name,
+            codex_command: execution.command,
+            prompt_template: execution.prompt_template,
+            claim_scope: execution.claim_scope
+          )
+          |> write_run_metadata()
+
+        append_run_event(run_metadata, :worker_started, %{worker_host: worker_host, workspace_path: workspace})
+        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace, run_metadata)
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            result =
+              run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, execution, run_metadata)
+
+            complete_run_metadata(run_metadata, result)
+            result
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -46,8 +66,10 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp codex_message_handler(recipient, issue) do
+  defp codex_message_handler(recipient, issue, run_metadata) do
     fn message ->
+      append_codex_event(run_metadata, message)
+      touch_run_metadata(run_metadata, message)
       send_codex_update(recipient, issue, message)
     end
   end
@@ -60,61 +82,86 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
 
-  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
+  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace, run_metadata)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
     send(
       recipient,
       {:worker_runtime_info, issue_id,
        %{
          worker_host: worker_host,
-         workspace_path: workspace
+         workspace_path: workspace,
+         run_id: Map.get(run_metadata, :run_id),
+         registry_path: Map.get(run_metadata, :registry_path),
+         event_log_path: Map.get(run_metadata, :event_log_path),
+         summary_path: Map.get(run_metadata, :summary_path),
+         runtime_kind: Map.get(run_metadata, :runtime_kind),
+         codex_profile: Map.get(run_metadata, :codex_profile),
+         prompt_template: Map.get(run_metadata, :prompt_template)
        }}
     )
 
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _run_metadata), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, execution, run_metadata) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    run_context = %{
+      codex_update_recipient: codex_update_recipient,
+      opts: opts,
+      issue_state_fetcher: issue_state_fetcher,
+      max_turns: max_turns,
+      execution: execution,
+      run_metadata: run_metadata
+    }
+
+    with {:ok, session} <-
+           AppServer.start_session(workspace,
+             worker_host: worker_host,
+             codex_command: execution.command,
+             codex_profile: execution.profile_name,
+             run_id: Map.get(run_metadata, :run_id)
+           ) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(session, workspace, issue, 1, run_context)
       after
         AppServer.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_codex_turns(app_session, workspace, issue, turn_number, run_context) do
+    prompt =
+      build_turn_prompt(
+        issue,
+        run_context.opts,
+        turn_number,
+        run_context.max_turns,
+        run_context.execution
+      )
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
              app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message:
+               codex_message_handler(
+                 run_context.codex_update_recipient,
+                 issue,
+                 run_context.run_metadata
+               )
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{run_context.max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      case continue_with_issue?(issue, run_context.issue_state_fetcher) do
+        {:continue, refreshed_issue} when turn_number < run_context.max_turns ->
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{run_context.max_turns}")
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+          do_run_codex_turns(app_session, workspace, refreshed_issue, turn_number + 1, run_context)
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
@@ -130,9 +177,16 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns, execution) do
+    opts =
+      opts
+      |> Keyword.put(:prompt_template, execution.prompt_template)
+      |> Keyword.put(:codex_profile, execution.profile_name)
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+    PromptBuilder.build_prompt(issue, opts)
+  end
+
+  defp build_turn_prompt(_issue, _opts, turn_number, max_turns, _execution) do
     """
     Continuation guidance:
 
@@ -200,4 +254,76 @@ defmodule SymphonyElixir.AgentRunner do
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
+
+  defp write_run_metadata(metadata) do
+    case Registry.write(metadata) do
+      {:ok, metadata} ->
+        metadata
+
+      {:error, reason} ->
+        Logger.warning("Failed to write run registry for issue_id=#{metadata[:issue_id]} issue_identifier=#{metadata[:issue_identifier]} run_id=#{metadata[:run_id]} reason=#{inspect(reason)}")
+        metadata
+    end
+  end
+
+  defp complete_run_metadata(metadata, :ok), do: complete_registry(metadata, "completed", nil)
+  defp complete_run_metadata(metadata, {:error, reason}), do: complete_registry(metadata, "failed", inspect(reason))
+
+  defp complete_registry(%{registry_path: path}, status, reason) when is_binary(path) do
+    case Registry.complete(path, status, reason) do
+      {:ok, _metadata} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp complete_registry(_metadata, _status, _reason), do: :ok
+
+  defp touch_run_metadata(%{registry_path: path}, message) when is_binary(path) and is_map(message) do
+    updates =
+      %{
+        status: "running",
+        session_id: Map.get(message, :session_id),
+        codex_app_server_pid: Map.get(message, :codex_app_server_pid),
+        codex_profile: Map.get(message, :codex_profile),
+        runtime_kind: Map.get(message, :runtime_kind),
+        tmux_target: Map.get(message, :tmux_target),
+        tmux_input_path: Map.get(message, :tmux_input_path),
+        tmux_output_path: Map.get(message, :tmux_output_path),
+        tmux_stderr_path: Map.get(message, :tmux_stderr_path),
+        last_event: Map.get(message, :event),
+        last_event_at: Map.get(message, :timestamp)
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+
+    case Registry.touch(path, updates) do
+      {:ok, _metadata} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp touch_run_metadata(_metadata, _message), do: :ok
+
+  defp append_run_event(%{event_log_path: path}, event, payload) when is_binary(path) do
+    case EventLog.append(path, %{event: event, payload: payload}) do
+      {:ok, _event} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp append_run_event(_metadata, _event, _payload), do: :ok
+
+  defp append_codex_event(%{event_log_path: path}, message) when is_binary(path) and is_map(message) do
+    event =
+      message
+      |> Map.take([:event, :timestamp, :payload, :raw, :usage, :session_id, :codex_app_server_pid, :codex_profile])
+      |> Map.put(:message, Map.get(message, :payload) || Map.get(message, :raw))
+
+    case EventLog.append(path, event) do
+      {:ok, _event} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp append_codex_event(_metadata, _message), do: :ok
 end

@@ -5,6 +5,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Runtime.EventSummarizer
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
   @stream_labels %{
@@ -52,15 +54,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event("toggle-issue", %{"issue" => issue_identifier}, socket) do
     expanded_issues = socket.assigns.expanded_issues
+    expanding? = !MapSet.member?(expanded_issues, issue_identifier)
+
+    if expanding? do
+      summarize_issue_details(issue_identifier, socket.assigns.payload)
+    end
 
     expanded_issues =
-      if MapSet.member?(expanded_issues, issue_identifier) do
-        MapSet.delete(expanded_issues, issue_identifier)
-      else
+      if expanding? do
         MapSet.put(expanded_issues, issue_identifier)
+      else
+        MapSet.delete(expanded_issues, issue_identifier)
       end
 
-    {:noreply, assign(socket, :expanded_issues, expanded_issues)}
+    {:noreply,
+     socket
+     |> assign(:expanded_issues, expanded_issues)
+     |> assign(:payload, load_payload())}
+  end
+
+  @impl true
+  def handle_event("set-drain", %{"enabled" => enabled}, socket) do
+    enabled? = enabled == "true"
+    _ = Config.set_drain(enabled?)
+
+    {:noreply,
+     socket
+     |> assign(:payload, load_payload())
+     |> assign(:now, DateTime.utc_now())}
   end
 
   @impl true
@@ -89,6 +110,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <span class="status-badge status-badge-offline">
               <span class="status-badge-dot"></span>
               Offline
+            </span>
+            <span :if={!@payload[:error] && drain_enabled?(@payload)} class="status-badge status-badge-warning">
+              <span class="status-badge-dot"></span>
+              Drain
             </span>
           </div>
         </div>
@@ -124,6 +149,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
+            <p class="metric-label">Adopted</p>
+            <p class="metric-value numeric"><%= count_value(@payload, :adopted) %></p>
+            <p class="metric-detail">Detached registry runs observed after startup.</p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Total tokens</p>
             <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
             <p class="metric-detail numeric">
@@ -136,6 +167,40 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
             <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
           </article>
+        </section>
+
+        <section :if={adopted_entries(@payload) != []} class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Adopted detached runs</h2>
+              <p class="section-copy">Read-only runs recovered from local registry and tmux state.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table" style="min-width: 860px;">
+              <thead>
+                <tr>
+                  <th>Issue</th>
+                  <th>Status</th>
+                  <th>Runtime</th>
+                  <th>tmux</th>
+                  <th>Workspace</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={entry <- adopted_entries(@payload)}>
+                  <td><span class="issue-id"><%= entry.issue_identifier || opt(entry, :run_id) %></span></td>
+                  <td><span class={state_badge_class(entry.status)}><%= entry.status || "unknown" %></span></td>
+                  <td><%= opt(entry, :runtime_kind, "native") %> · <%= opt(entry, :codex_profile, "default") %></td>
+                  <td class="mono"><%= opt(entry, :tmux_target, "n/a") %></td>
+                  <td class="mono"><%= entry.workspace_path || "n/a" %></td>
+                  <td><%= entry.status_reason || "n/a" %></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section class="section-card">
@@ -152,8 +217,39 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
+              <h2 class="section-title">Scheduling</h2>
+              <p class="section-copy">Latest epic focus ordering and malformed candidate counts.</p>
+            </div>
+          </div>
+
+          <pre class="code-panel"><%= pretty_value(Map.get(@payload, :scheduling)) %></pre>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
               <h2 class="section-title">Running sessions</h2>
               <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
+            </div>
+            <div class="link-row">
+              <button
+                :if={!drain_enabled?(@payload)}
+                type="button"
+                class="subtle-button"
+                phx-click="set-drain"
+                phx-value-enabled="true"
+              >
+                Start drain
+              </button>
+              <button
+                :if={drain_enabled?(@payload)}
+                type="button"
+                class="subtle-button"
+                phx-click="set-drain"
+                phx-value-enabled="false"
+              >
+                Stop drain
+              </button>
             </div>
           </div>
 
@@ -200,9 +296,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </div>
                       </td>
                       <td>
-                        <span class={state_badge_class(entry.state)}>
-                          <%= entry.state %>
-                        </span>
+                        <div class="detail-stack">
+                          <span class={state_badge_class(entry.state)}>
+                            <%= entry.state %>
+                          </span>
+                          <span class="muted event-meta"><%= opt(entry, :runtime_kind, "native") %> · <%= opt(entry, :codex_profile, "default") %></span>
+                        </div>
                       </td>
                       <td>
                         <div class="session-stack">
@@ -248,6 +347,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <div class="issue-detail-panel">
                           <div class="detail-grid">
                             <div>
+                              <span class="detail-label">Run</span>
+                              <span class="mono detail-value"><%= opt(entry, :run_id, "n/a") %></span>
+                            </div>
+                            <div>
+                              <span class="detail-label">Runtime</span>
+                              <span class="detail-value"><%= opt(entry, :runtime_kind, "native") %> · <%= opt(entry, :codex_profile, "default") %></span>
+                            </div>
+                            <div>
+                              <span class="detail-label">tmux</span>
+                              <span class="mono detail-value"><%= opt(entry, :tmux_target, "n/a") %></span>
+                            </div>
+                            <div>
                               <span class="detail-label">Workspace</span>
                               <span class="mono detail-value"><%= entry.workspace_path || "n/a" %></span>
                             </div>
@@ -260,6 +371,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                               <span class="detail-value"><%= display_last_message(entry) %></span>
                             </div>
                             <div>
+                              <span class="detail-label">Registry</span>
+                              <span class="mono detail-value"><%= opt(entry, :registry_path, "n/a") %></span>
+                            </div>
+                            <div>
+                              <span class="detail-label">Event log</span>
+                              <span class="mono detail-value"><%= opt(entry, :event_log_path, "n/a") %></span>
+                            </div>
+                            <div>
                               <span class="detail-label">JSON</span>
                               <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}><%= entry.issue_identifier %> API payload</a>
                             </div>
@@ -270,6 +389,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
                               <span>Recent Codex events</span>
                               <span class="muted"><%= length(recent_events_for_display(entry.recent_events)) %> shown</span>
                             </div>
+                            <div :if={summary_segments(entry) != []} class="summary-log">
+                              <div :for={segment <- summary_segments(entry)} class="summary-segment">
+                                <span class="mono event-time"><%= segment.started_at || "n/a" %></span>
+                                <span><%= segment.summary %></span>
+                              </div>
+                            </div>
+                            <p :if={summary_failed?(entry)} class="empty-state">
+                              Summary failed: <%= opt(Map.get(entry, :summary, %{}), :status_reason, "unknown") %>
+                            </p>
                             <%= if (entry.recent_events || []) == [] do %>
                               <p class="empty-state">No Codex events captured yet.</p>
                             <% else %>
@@ -490,6 +618,66 @@ defmodule SymphonyElixirWeb.DashboardLive do
         entry.last_message || to_string(entry.last_event || "n/a")
     end
   end
+
+  defp summarize_issue_details(issue_identifier, payload) do
+    payload
+    |> active_entries()
+    |> Enum.find(&(&1.issue_identifier == issue_identifier))
+    |> case do
+      nil -> :ok
+      entry -> EventSummarizer.summarize_entry(entry)
+    end
+  end
+
+  defp active_entries(payload) when is_map(payload) do
+    (Map.get(payload, :running, []) || []) ++ (Map.get(payload, :adopted, []) || [])
+  end
+
+  defp active_entries(_payload), do: []
+
+  defp adopted_entries(payload) when is_map(payload), do: Map.get(payload, :adopted, []) || []
+  defp adopted_entries(_payload), do: []
+
+  defp drain_enabled?(payload) when is_map(payload) do
+    case Map.get(payload, :drain) do
+      %{enabled: true} -> true
+      _ -> false
+    end
+  end
+
+  defp drain_enabled?(_payload), do: false
+
+  defp count_value(payload, key) when is_map(payload) do
+    payload
+    |> Map.get(:counts, %{})
+    |> Map.get(key, 0)
+  end
+
+  defp count_value(_payload, _key), do: 0
+
+  defp summary_segments(entry) do
+    entry
+    |> Map.get(:summary, %{})
+    |> Map.get(:segments, [])
+  end
+
+  defp summary_failed?(entry) do
+    entry
+    |> Map.get(:summary, %{})
+    |> Map.get(:status)
+    |> Kernel.==("failed")
+  end
+
+  defp opt(map, key, default \\ nil)
+
+  defp opt(map, key, default) when is_map(map) do
+    case Map.get(map, key) do
+      nil -> default
+      value -> value
+    end
+  end
+
+  defp opt(_map, _key, default), do: default
 
   defp compact_streaming_events(events) do
     {compacted, streaming_group} =

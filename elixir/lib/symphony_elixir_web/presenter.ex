@@ -4,6 +4,23 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.Runtime.{EventLog, SummaryStore}
+
+  @optional_runtime_fields MapSet.new([
+                             :run_id,
+                             :runtime_kind,
+                             :registry_path,
+                             :event_log_path,
+                             :summary_path,
+                             :summary,
+                             :codex_profile,
+                             :prompt_template,
+                             :tmux_target,
+                             :tmux_input_path,
+                             :tmux_output_path,
+                             :tmux_stderr_path,
+                             :status_reason
+                           ])
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -11,19 +28,30 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        adopted = Enum.map(Map.get(snapshot, :adopted, []), &adopted_entry_payload/1)
+        drain = Map.get(snapshot, :drain, %{enabled: false, file: nil})
+        profile_totals = Map.get(snapshot, :profile_totals, %{})
+        scheduling = Map.get(snapshot, :scheduling, %{})
+
         %{
           generated_at: generated_at,
-          counts: %{
-            running: length(snapshot.running),
-            retrying: length(snapshot.retrying),
-            blocked: length(Map.get(snapshot, :blocked, []))
-          },
+          counts:
+            %{
+              running: length(snapshot.running),
+              retrying: length(snapshot.retrying),
+              blocked: length(Map.get(snapshot, :blocked, []))
+            }
+            |> maybe_put(:adopted, length(adopted), adopted != []),
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
+        |> maybe_put(:adopted, adopted, adopted != [])
+        |> maybe_put(:drain, drain, drain[:enabled] == true)
+        |> maybe_put(:profile_totals, profile_totals, profile_totals != %{})
+        |> maybe_put(:scheduling, scheduling, scheduling != %{})
 
       :timeout ->
         %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
@@ -131,6 +159,17 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      run_id: Map.get(entry, :run_id),
+      runtime_kind: Map.get(entry, :runtime_kind),
+      registry_path: Map.get(entry, :registry_path),
+      event_log_path: Map.get(entry, :event_log_path),
+      summary_path: Map.get(entry, :summary_path),
+      codex_profile: Map.get(entry, :codex_profile),
+      prompt_template: Map.get(entry, :prompt_template),
+      tmux_target: Map.get(entry, :tmux_target),
+      tmux_input_path: Map.get(entry, :tmux_input_path),
+      tmux_output_path: Map.get(entry, :tmux_output_path),
+      tmux_stderr_path: Map.get(entry, :tmux_stderr_path),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
@@ -142,8 +181,10 @@ defmodule SymphonyElixirWeb.Presenter do
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
       },
-      recent_events: recent_events_payload(entry)
+      recent_events: recent_events_payload(entry),
+      summary: summary_payload(Map.get(entry, :summary_path))
     }
+    |> compact_map()
   end
 
   defp retry_entry_payload(entry) do
@@ -166,18 +207,68 @@ defmodule SymphonyElixirWeb.Presenter do
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      run_id: Map.get(entry, :run_id),
+      runtime_kind: Map.get(entry, :runtime_kind),
+      registry_path: Map.get(entry, :registry_path),
+      event_log_path: Map.get(entry, :event_log_path),
+      summary_path: Map.get(entry, :summary_path),
+      codex_profile: Map.get(entry, :codex_profile),
+      prompt_template: Map.get(entry, :prompt_template),
+      tmux_target: Map.get(entry, :tmux_target),
+      tmux_input_path: Map.get(entry, :tmux_input_path),
+      tmux_output_path: Map.get(entry, :tmux_output_path),
+      tmux_stderr_path: Map.get(entry, :tmux_stderr_path),
       session_id: entry.session_id,
       blocked_at: iso8601(entry.blocked_at),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
-      last_event_at: iso8601(entry.last_codex_timestamp)
+      last_event_at: iso8601(entry.last_codex_timestamp),
+      summary: summary_payload(Map.get(entry, :summary_path))
     }
+    |> compact_map()
+  end
+
+  defp adopted_entry_payload(entry) do
+    %{
+      issue_id: Map.get(entry, :issue_id),
+      issue_identifier: Map.get(entry, :identifier),
+      state: Map.get(entry, :state),
+      run_id: Map.get(entry, :run_id),
+      runtime_kind: Map.get(entry, :runtime_kind),
+      status: Map.get(entry, :status),
+      status_reason: Map.get(entry, :status_reason),
+      worker_host: Map.get(entry, :worker_host),
+      workspace_path: Map.get(entry, :workspace_path),
+      registry_path: Map.get(entry, :registry_path),
+      event_log_path: Map.get(entry, :event_log_path),
+      summary_path: Map.get(entry, :summary_path),
+      codex_profile: Map.get(entry, :codex_profile),
+      prompt_template: Map.get(entry, :prompt_template),
+      tmux_target: Map.get(entry, :tmux_target),
+      heartbeat_at: iso8601(Map.get(entry, :heartbeat_at)),
+      started_at: iso8601(Map.get(entry, :started_at)),
+      updated_at: iso8601(Map.get(entry, :updated_at)),
+      recent_events: recent_events_payload(entry),
+      summary: summary_payload(Map.get(entry, :summary_path))
+    }
+    |> compact_map()
   end
 
   defp running_issue_payload(running) do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
+      run_id: Map.get(running, :run_id),
+      runtime_kind: Map.get(running, :runtime_kind),
+      registry_path: Map.get(running, :registry_path),
+      event_log_path: Map.get(running, :event_log_path),
+      summary_path: Map.get(running, :summary_path),
+      codex_profile: Map.get(running, :codex_profile),
+      prompt_template: Map.get(running, :prompt_template),
+      tmux_target: Map.get(running, :tmux_target),
+      tmux_input_path: Map.get(running, :tmux_input_path),
+      tmux_output_path: Map.get(running, :tmux_output_path),
+      tmux_stderr_path: Map.get(running, :tmux_stderr_path),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
@@ -190,8 +281,10 @@ defmodule SymphonyElixirWeb.Presenter do
         output_tokens: running.codex_output_tokens,
         total_tokens: running.codex_total_tokens
       },
-      recent_events: recent_events_payload(running)
+      recent_events: recent_events_payload(running),
+      summary: summary_payload(Map.get(running, :summary_path))
     }
+    |> compact_map()
   end
 
   defp retry_issue_payload(retry) do
@@ -208,14 +301,27 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(blocked, :worker_host),
       workspace_path: Map.get(blocked, :workspace_path),
+      run_id: Map.get(blocked, :run_id),
+      runtime_kind: Map.get(blocked, :runtime_kind),
+      registry_path: Map.get(blocked, :registry_path),
+      event_log_path: Map.get(blocked, :event_log_path),
+      summary_path: Map.get(blocked, :summary_path),
+      codex_profile: Map.get(blocked, :codex_profile),
+      prompt_template: Map.get(blocked, :prompt_template),
+      tmux_target: Map.get(blocked, :tmux_target),
+      tmux_input_path: Map.get(blocked, :tmux_input_path),
+      tmux_output_path: Map.get(blocked, :tmux_output_path),
+      tmux_stderr_path: Map.get(blocked, :tmux_stderr_path),
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),
-      last_event_at: iso8601(blocked.last_codex_timestamp)
+      last_event_at: iso8601(blocked.last_codex_timestamp),
+      summary: summary_payload(Map.get(blocked, :summary_path))
     }
+    |> compact_map()
   end
 
   defp workspace_path(issue_identifier, running, retry, blocked) do
@@ -234,11 +340,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp recent_events_payload(nil), do: []
 
   defp recent_events_payload(entry) do
-    events =
-      entry
-      |> Map.get(:codex_events, [])
-      |> Enum.map(&codex_event_payload/1)
-      |> Enum.reject(&is_nil(&1.at))
+    events = durable_recent_events(entry) || in_memory_recent_events(entry)
 
     if events == [] do
       [
@@ -252,6 +354,49 @@ defmodule SymphonyElixirWeb.Presenter do
     else
       events
     end
+  end
+
+  defp durable_recent_events(entry) do
+    case Map.get(entry, :event_log_path) do
+      path when is_binary(path) ->
+        case EventLog.tail(path, 100) do
+          {:ok, events} ->
+            events
+            |> Enum.map(&codex_event_payload/1)
+            |> Enum.reject(&is_nil(&1.at))
+
+          {:error, _reason} ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp in_memory_recent_events(entry) do
+    entry
+    |> Map.get(:codex_events, [])
+    |> Enum.map(&codex_event_payload/1)
+    |> Enum.reject(&is_nil(&1.at))
+  end
+
+  defp summary_payload(nil), do: nil
+
+  defp summary_payload(path) do
+    case SummaryStore.read(path) do
+      {:ok, summary} -> summary
+      {:error, reason} -> %{SummaryStore.empty() | status: "failed", status_reason: inspect(reason)}
+    end
+  end
+
+  defp maybe_put(map, _key, _value, false), do: map
+  defp maybe_put(map, key, value, true), do: Map.put(map, key, value)
+
+  defp compact_map(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {key, value} -> is_nil(value) and MapSet.member?(@optional_runtime_fields, key) end)
+    |> Map.new()
   end
 
   defp codex_event_payload(%{event: event, timestamp: timestamp, message: message}) do
@@ -281,6 +426,8 @@ defmodule SymphonyElixirWeb.Presenter do
     |> DateTime.truncate(:second)
     |> DateTime.to_iso8601()
   end
+
+  defp iso8601(datetime) when is_binary(datetime), do: datetime
 
   defp iso8601(_datetime), do: nil
 end

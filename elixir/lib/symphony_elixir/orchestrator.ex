@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Runtime.{Registry, Tmux}
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -38,9 +39,12 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       blocked: %{},
+      adopted: [],
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_profile_totals: %{},
+      last_scheduling: %{}
     ]
   end
 
@@ -62,8 +66,11 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      adopted: adopt_detached_runs(),
       codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_profile_totals: %{},
+      last_scheduling: %{}
     }
 
     run_terminal_workspace_cleanup()
@@ -151,6 +158,13 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+          |> maybe_put_runtime_value(:run_id, runtime_info[:run_id])
+          |> maybe_put_runtime_value(:runtime_kind, runtime_info[:runtime_kind])
+          |> maybe_put_runtime_value(:registry_path, runtime_info[:registry_path])
+          |> maybe_put_runtime_value(:event_log_path, runtime_info[:event_log_path])
+          |> maybe_put_runtime_value(:summary_path, runtime_info[:summary_path])
+          |> maybe_put_runtime_value(:codex_profile, runtime_info[:codex_profile])
+          |> maybe_put_runtime_value(:prompt_template, runtime_info[:prompt_template])
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -171,6 +185,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           state
           |> apply_codex_token_delta(token_delta)
+          |> apply_codex_profile_token_delta(updated_running_entry, token_delta)
           |> apply_codex_rate_limits(update)
 
         notify_dashboard()
@@ -250,11 +265,16 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with :ok <- Config.validate!(),
+    with false <- Config.drain?(),
+         :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
     else
+      true ->
+        Logger.debug("Dispatch skipped while drain mode is enabled")
+        state
+
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
         state
@@ -738,6 +758,17 @@ defmodule SymphonyElixir.Orchestrator do
       issue: Map.get(running_entry, :issue),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
+      run_id: Map.get(running_entry, :run_id),
+      runtime_kind: Map.get(running_entry, :runtime_kind),
+      registry_path: Map.get(running_entry, :registry_path),
+      event_log_path: Map.get(running_entry, :event_log_path),
+      summary_path: Map.get(running_entry, :summary_path),
+      codex_profile: Map.get(running_entry, :codex_profile),
+      prompt_template: Map.get(running_entry, :prompt_template),
+      tmux_target: Map.get(running_entry, :tmux_target),
+      tmux_input_path: Map.get(running_entry, :tmux_input_path),
+      tmux_output_path: Map.get(running_entry, :tmux_output_path),
+      tmux_stderr_path: Map.get(running_entry, :tmux_stderr_path),
       session_id: running_entry_session_id(running_entry),
       error: error,
       blocked_at: DateTime.utc_now(),
@@ -759,9 +790,13 @@ defmodule SymphonyElixir.Orchestrator do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
 
-    issues
-    |> Enum.filter(&should_dispatch_issue?(&1, state, active_states, terminal_states))
-    |> sort_issues_for_dispatch(state.running)
+    runnable_issues =
+      Enum.filter(issues, &should_dispatch_issue?(&1, state, active_states, terminal_states))
+
+    ordered_issues = sort_issues_for_dispatch(runnable_issues, state.running)
+    state = %{state | last_scheduling: scheduling_decision_snapshot(runnable_issues, ordered_issues, state.running)}
+
+    ordered_issues
     |> Enum.reduce(state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
         dispatch_issue(state_acc, issue)
@@ -769,6 +804,22 @@ defmodule SymphonyElixir.Orchestrator do
         state_acc
       end
     end)
+  end
+
+  defp scheduling_decision_snapshot(runnable_issues, ordered_issues, running) do
+    {valid_issues, malformed_issues} = Enum.split_with(runnable_issues, &(valid_epic_label(&1) != nil))
+
+    %{
+      runnable_count: length(runnable_issues),
+      valid_epic_count: length(valid_issues),
+      malformed_count: length(malformed_issues),
+      malformed_identifiers: Enum.map(malformed_issues, &(&1.identifier || &1.id)),
+      running_epics: running |> running_epic_label_set() |> MapSet.to_list() |> Enum.sort(),
+      focus_order:
+        ordered_issues
+        |> Enum.map(&(valid_epic_label(&1) || "malformed"))
+        |> Enum.dedup()
+    }
   end
 
   defp sort_issues_for_dispatch(issues, running) when is_list(issues) and is_map(running) do
@@ -1045,6 +1096,17 @@ defmodule SymphonyElixir.Orchestrator do
             issue: issue,
             worker_host: worker_host,
             workspace_path: nil,
+            run_id: nil,
+            runtime_kind: nil,
+            registry_path: nil,
+            event_log_path: nil,
+            summary_path: nil,
+            codex_profile: nil,
+            prompt_template: nil,
+            tmux_target: nil,
+            tmux_input_path: nil,
+            tmux_output_path: nil,
+            tmux_stderr_path: nil,
             session_id: nil,
             last_codex_message: nil,
             last_codex_timestamp: nil,
@@ -1239,6 +1301,28 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
     end
+  end
+
+  defp adopt_detached_runs do
+    if Config.settings!().runtime.adopt_detached_runs do
+      case Registry.list() do
+        {:ok, metadata} ->
+          Enum.reject(metadata, &terminal_adopted_run?/1)
+
+        {:error, reason} ->
+          Logger.warning("Skipping detached run adoption; registry read failed: #{inspect(reason)}")
+          []
+      end
+    else
+      []
+    end
+  end
+
+  defp terminal_adopted_run?(metadata) when is_map(metadata) do
+    metadata
+    |> Map.get(:status)
+    |> to_string()
+    |> Kernel.in(["completed", "failed", "blocked", "stopped", "dead"])
   end
 
   defp notify_dashboard do
@@ -1462,6 +1546,17 @@ defmodule SymphonyElixir.Orchestrator do
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
+          run_id: Map.get(metadata, :run_id),
+          runtime_kind: Map.get(metadata, :runtime_kind),
+          registry_path: Map.get(metadata, :registry_path),
+          event_log_path: Map.get(metadata, :event_log_path),
+          summary_path: Map.get(metadata, :summary_path),
+          codex_profile: Map.get(metadata, :codex_profile),
+          prompt_template: Map.get(metadata, :prompt_template),
+          tmux_target: Map.get(metadata, :tmux_target),
+          tmux_input_path: Map.get(metadata, :tmux_input_path),
+          tmux_output_path: Map.get(metadata, :tmux_output_path),
+          tmux_stderr_path: Map.get(metadata, :tmux_stderr_path),
           session_id: metadata.session_id,
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
@@ -1500,6 +1595,17 @@ defmodule SymphonyElixir.Orchestrator do
           state: blocked_issue_state(metadata),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
+          run_id: Map.get(metadata, :run_id),
+          runtime_kind: Map.get(metadata, :runtime_kind),
+          registry_path: Map.get(metadata, :registry_path),
+          event_log_path: Map.get(metadata, :event_log_path),
+          summary_path: Map.get(metadata, :summary_path),
+          codex_profile: Map.get(metadata, :codex_profile),
+          prompt_template: Map.get(metadata, :prompt_template),
+          tmux_target: Map.get(metadata, :tmux_target),
+          tmux_input_path: Map.get(metadata, :tmux_input_path),
+          tmux_output_path: Map.get(metadata, :tmux_output_path),
+          tmux_stderr_path: Map.get(metadata, :tmux_stderr_path),
           session_id: Map.get(metadata, :session_id),
           error: Map.get(metadata, :error),
           blocked_at: Map.get(metadata, :blocked_at),
@@ -1509,13 +1615,22 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    adopted = Enum.map(state.adopted, &adopted_run_snapshot/1)
+
     {:reply,
      %{
        running: running,
        retrying: retrying,
        blocked: blocked,
+       adopted: adopted,
        codex_totals: state.codex_totals,
+       profile_totals: state.codex_profile_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       scheduling: state.last_scheduling,
+       drain: %{
+         enabled: Config.drain?(),
+         file: Config.settings!().runtime.drain_file
+       },
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1542,6 +1657,37 @@ defmodule SymphonyElixir.Orchestrator do
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state
   defp blocked_issue_state(_metadata), do: nil
 
+  defp adopted_run_snapshot(metadata) when is_map(metadata) do
+    {status, reason} = detached_classification(metadata)
+
+    %{
+      issue_id: Map.get(metadata, :issue_id),
+      identifier: Map.get(metadata, :issue_identifier),
+      state: Map.get(metadata, :issue_state),
+      run_id: Map.get(metadata, :run_id),
+      runtime_kind: Map.get(metadata, :runtime_kind),
+      status: status,
+      status_reason: reason,
+      worker_host: Map.get(metadata, :worker_host),
+      workspace_path: Map.get(metadata, :workspace_path),
+      registry_path: Map.get(metadata, :registry_path),
+      event_log_path: Map.get(metadata, :event_log_path),
+      summary_path: Map.get(metadata, :summary_path),
+      codex_profile: Map.get(metadata, :codex_profile),
+      prompt_template: Map.get(metadata, :prompt_template),
+      tmux_target: Map.get(metadata, :tmux_target),
+      heartbeat_at: Map.get(metadata, :heartbeat_at),
+      started_at: Map.get(metadata, :started_at),
+      updated_at: Map.get(metadata, :updated_at)
+    }
+  end
+
+  defp detached_classification(%{runtime_kind: "tmux", tmux_target: target}) do
+    Tmux.classify_target(target)
+  end
+
+  defp detached_classification(metadata), do: Registry.classification(metadata)
+
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
@@ -1561,6 +1707,12 @@ defmodule SymphonyElixir.Orchestrator do
         session_id: session_id_for_update(running_entry.session_id, update),
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
+        codex_profile: Map.get(update, :codex_profile) || Map.get(running_entry, :codex_profile),
+        runtime_kind: Map.get(update, :runtime_kind) || Map.get(running_entry, :runtime_kind),
+        tmux_target: Map.get(update, :tmux_target) || Map.get(running_entry, :tmux_target),
+        tmux_input_path: Map.get(update, :tmux_input_path) || Map.get(running_entry, :tmux_input_path),
+        tmux_output_path: Map.get(update, :tmux_output_path) || Map.get(running_entry, :tmux_output_path),
+        tmux_stderr_path: Map.get(update, :tmux_stderr_path) || Map.get(running_entry, :tmux_stderr_path),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
@@ -1715,6 +1867,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_codex_token_delta(state, _token_delta), do: state
+
+  defp apply_codex_profile_token_delta(%State{} = state, running_entry, token_delta)
+       when is_map(running_entry) and is_map(token_delta) do
+    profile = Map.get(running_entry, :codex_profile) || "default"
+    current = Map.get(state.codex_profile_totals, profile, @empty_codex_totals)
+
+    %{
+      state
+      | codex_profile_totals:
+          Map.put(
+            state.codex_profile_totals,
+            profile,
+            apply_token_delta(current, token_delta)
+          )
+    }
+  end
+
+  defp apply_codex_profile_token_delta(state, _running_entry, _token_delta), do: state
 
   defp apply_codex_rate_limits(%State{} = state, update) when is_map(update) do
     case extract_rate_limits(update) do

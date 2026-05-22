@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   require Logger
   alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.Runtime.Tmux
 
   @initialize_id 1
   @thread_start_id 2
@@ -22,6 +23,11 @@ defmodule SymphonyElixir.Codex.AppServer do
           turn_sandbox_policy: map(),
           thread_id: String.t(),
           workspace: Path.t(),
+          dynamic_tools: [map()],
+          codex_profile: String.t() | nil,
+          codex_command: String.t(),
+          runtime_kind: String.t(),
+          tmux_target: String.t() | nil,
           worker_host: String.t() | nil
         }
 
@@ -39,13 +45,22 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    codex_command = Keyword.get(opts, :codex_command, Config.settings!().codex.command)
+    codex_profile = Keyword.get(opts, :codex_profile)
+    run_id = Keyword.get(opts, :run_id)
+    dynamic_tools = dynamic_tools_for_session(opts)
+    use_tmux? = Keyword.get(opts, :runtime_kind) != :native
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host) do
-      metadata = port_metadata(port, worker_host)
+         {:ok, port, launch_metadata} <-
+           start_port(expanded_workspace, worker_host, codex_command, run_id, use_tmux?) do
+      metadata =
+        port
+        |> port_metadata(worker_host, codex_profile)
+        |> Map.merge(launch_metadata)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
-           {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
+           {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies, dynamic_tools) do
         {:ok,
          %{
            port: port,
@@ -56,6 +71,11 @@ defmodule SymphonyElixir.Codex.AppServer do
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
            workspace: expanded_workspace,
+           dynamic_tools: dynamic_tools,
+           codex_profile: codex_profile,
+           codex_command: codex_command,
+           runtime_kind: Map.get(metadata, :runtime_kind, "native"),
+           tmux_target: Map.get(metadata, :tmux_target),
            worker_host: worker_host
          }}
       else
@@ -82,6 +102,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         opts \\ []
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    turn_timeout_ms = Keyword.get(opts, :turn_timeout_ms, Config.settings!().codex.turn_timeout_ms)
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
@@ -104,7 +125,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
+        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests, turn_timeout_ms) do
           {:ok, result} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -186,7 +207,34 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil) do
+  defp start_port(workspace, nil, codex_command, run_id, use_tmux?) do
+    if use_tmux? and Tmux.enabled?() do
+      case Tmux.start_app_server(workspace, codex_command, run_id: run_id) do
+        {:ok, port, metadata} ->
+          {:ok, port, metadata}
+
+        {:error, :tmux_not_found} ->
+          Logger.warning("runtime.tmux_enabled=true but tmux was not found; falling back to native app-server launch")
+          start_native_port(workspace, codex_command)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      start_native_port(workspace, codex_command)
+    end
+  end
+
+  defp start_port(workspace, worker_host, codex_command, _run_id, _use_tmux?) when is_binary(worker_host) do
+    remote_command = remote_launch_command(workspace, codex_command)
+
+    case SSH.start_port(worker_host, remote_command, line: @port_line_bytes) do
+      {:ok, port} -> {:ok, port, %{runtime_kind: "native"}}
+      error -> error
+    end
+  end
+
+  defp start_native_port(workspace, codex_command) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -199,30 +247,25 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
+            args: [~c"-lc", String.to_charlist(codex_command)],
             cd: String.to_charlist(workspace),
             line: @port_line_bytes
           ]
         )
 
-      {:ok, port}
+      {:ok, port, %{runtime_kind: "native"}}
     end
   end
 
-  defp start_port(workspace, worker_host) when is_binary(worker_host) do
-    remote_command = remote_launch_command(workspace)
-    SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
-  end
-
-  defp remote_launch_command(workspace) when is_binary(workspace) do
+  defp remote_launch_command(workspace, codex_command) when is_binary(workspace) and is_binary(codex_command) do
     [
       "cd #{shell_escape(workspace)}",
-      "exec #{Config.settings!().codex.command}"
+      "exec #{codex_command}"
     ]
     |> Enum.join(" && ")
   end
 
-  defp port_metadata(port, worker_host) when is_port(port) do
+  defp port_metadata(port, worker_host, codex_profile \\ nil) when is_port(port) do
     base_metadata =
       case :erlang.port_info(port, :os_pid) do
         {:os_pid, os_pid} ->
@@ -230,6 +273,12 @@ defmodule SymphonyElixir.Codex.AppServer do
 
         _ ->
           %{}
+      end
+
+    base_metadata =
+      case codex_profile do
+        profile when is_binary(profile) -> Map.put(base_metadata, :codex_profile, profile)
+        _ -> base_metadata
       end
 
     case worker_host do
@@ -270,14 +319,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies) do
+  defp do_start_session(port, workspace, session_policies, dynamic_tools) do
     case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies)
+      :ok -> start_thread(port, workspace, session_policies, dynamic_tools)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}) do
+  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}, dynamic_tools) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
@@ -285,7 +334,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         "approvalPolicy" => approval_policy,
         "sandbox" => thread_sandbox,
         "cwd" => workspace,
-        "dynamicTools" => DynamicTool.tool_specs()
+        "dynamicTools" => dynamic_tools
       }
     })
 
@@ -326,11 +375,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
+  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests, timeout_ms) do
     receive_loop(
       port,
       on_message,
-      Config.settings!().codex.turn_timeout_ms,
+      timeout_ms,
       "",
       tool_executor,
       auto_approve_requests
@@ -1032,6 +1081,15 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp default_on_message(_message), do: :ok
+
+  defp dynamic_tools_for_session(opts) do
+    case Keyword.get(opts, :dynamic_tools, :default) do
+      :default -> DynamicTool.tool_specs()
+      false -> []
+      tools when is_list(tools) -> tools
+      _ -> DynamicTool.tool_specs()
+    end
+  end
 
   defp tool_call_name(params) when is_map(params) do
     case Map.get(params, "tool") || Map.get(params, :tool) || Map.get(params, "name") || Map.get(params, :name) do

@@ -156,9 +156,15 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    alias SymphonyElixir.Config.Schema
+
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
+      field(:default_profile, :string, default: "default")
+      field(:profiles, :map, default: %{})
+      field(:routes, :map, default: %{})
+      field(:prompt_templates, :map, default: %{})
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -184,6 +190,10 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :default_profile,
+          :profiles,
+          :routes,
+          :prompt_templates,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
@@ -197,6 +207,50 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> Schema.validate_map(:profiles)
+      |> Schema.validate_map(:routes)
+      |> Schema.validate_map(:prompt_templates)
+    end
+  end
+
+  defmodule Runtime do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:state_root, :string)
+      field(:tmux_enabled, :boolean, default: false)
+      field(:tmux_session, :string)
+      field(:adopt_detached_runs, :boolean, default: true)
+      field(:stale_after_ms, :integer, default: 600_000)
+      field(:drain_file, :string)
+      field(:summary_enabled, :boolean, default: true)
+      field(:summary_profile, :string, default: "spark")
+      field(:summary_timeout_ms, :integer, default: 120_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :state_root,
+          :tmux_enabled,
+          :tmux_session,
+          :adopt_detached_runs,
+          :stale_after_ms,
+          :drain_file,
+          :summary_enabled,
+          :summary_profile,
+          :summary_timeout_ms
+        ],
+        empty_values: []
+      )
+      |> validate_number(:stale_after_ms, greater_than: 0)
+      |> validate_number(:summary_timeout_ms, greater_than: 0)
     end
   end
 
@@ -269,6 +323,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:runtime, Runtime, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -361,6 +416,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:runtime, with: &Runtime.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
@@ -381,10 +437,27 @@ defmodule SymphonyElixir.Config.Schema do
     codex = %{
       settings.codex
       | approval_policy: normalize_keys(settings.codex.approval_policy),
-        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
+        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
+        profiles: normalize_keys(settings.codex.profiles || %{}),
+        routes: normalize_keys(settings.codex.routes || %{}),
+        prompt_templates: normalize_keys(settings.codex.prompt_templates || %{})
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    runtime = %{
+      settings.runtime
+      | state_root:
+          resolve_path_value(
+            settings.runtime.state_root,
+            Path.join(workspace.root, ".symphony_runtime")
+          ),
+        drain_file:
+          resolve_optional_path_value(
+            settings.runtime.drain_file,
+            Path.join([workspace.root, ".symphony_runtime", "drain"])
+          )
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, codex: codex, runtime: runtime}
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -398,6 +471,14 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
+
+  @doc false
+  @spec validate_map(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
+  def validate_map(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      if is_map(value), do: [], else: [{field, "must be a map"}]
+    end)
+  end
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
@@ -435,6 +516,20 @@ defmodule SymphonyElixir.Config.Schema do
         path
     end
   end
+
+  defp resolve_path_value(_value, default), do: default
+
+  defp resolve_optional_path_value(nil, default), do: default
+
+  defp resolve_optional_path_value(value, default) when is_binary(value) do
+    case normalize_path_token(value) do
+      :missing -> default
+      "" -> nil
+      path -> path
+    end
+  end
+
+  defp resolve_optional_path_value(_value, _default), do: nil
 
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do
