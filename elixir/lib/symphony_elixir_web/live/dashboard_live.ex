@@ -191,12 +191,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </thead>
               <tbody>
                 <tr :for={entry <- adopted_entries(@payload)}>
-                  <td><span class="issue-id"><%= entry.issue_identifier || opt(entry, :run_id) %></span></td>
-                  <td><span class={state_badge_class(entry.status)}><%= entry.status || "unknown" %></span></td>
+                  <td><span class="issue-id"><%= opt(entry, :issue_identifier, opt(entry, :run_id)) %></span></td>
+                  <td><span class={state_badge_class(opt(entry, :status))}><%= opt(entry, :status, "unknown") %></span></td>
                   <td><%= opt(entry, :runtime_kind, "native") %> · <%= opt(entry, :codex_profile, "default") %></td>
                   <td class="mono"><%= opt(entry, :tmux_target, "n/a") %></td>
-                  <td class="mono"><%= entry.workspace_path || "n/a" %></td>
-                  <td><%= entry.status_reason || "n/a" %></td>
+                  <td class="mono"><%= opt(entry, :workspace_path, "n/a") %></td>
+                  <td><%= opt(entry, :status_reason, "n/a") %></td>
                 </tr>
               </tbody>
             </table>

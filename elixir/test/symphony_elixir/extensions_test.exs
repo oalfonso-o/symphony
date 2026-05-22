@@ -553,7 +553,18 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
-    snapshot = static_snapshot()
+
+    snapshot =
+      Map.put(static_snapshot(), :adopted, [
+        %{
+          issue_id: "issue-adopted",
+          identifier: "MT-ADOPTED",
+          state: "Ready for Agent",
+          status: "running",
+          started_at: DateTime.utc_now(),
+          updated_at: DateTime.utc_now()
+        }
+      ])
 
     {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
@@ -574,6 +585,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
+    assert html =~ "MT-ADOPTED"
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
