@@ -345,9 +345,9 @@ defmodule SymphonyElixirWeb.Presenter do
     if events == [] do
       [
         %{
-          at: iso8601(entry.last_codex_timestamp),
-          event: entry.last_codex_event,
-          message: summarize_message(entry.last_codex_message)
+          at: iso8601(Map.get(entry, :last_codex_timestamp)),
+          event: Map.get(entry, :last_codex_event),
+          message: summarize_message(Map.get(entry, :last_codex_message))
         }
       ]
       |> Enum.reject(&is_nil(&1.at))

@@ -766,6 +766,40 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
+  test "dashboard presenter tolerates adopted registry entries without live codex fields" do
+    summary_path =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-adopted-summary-#{System.unique_integer([:positive])}.json"
+      )
+
+    on_exit(fn -> File.rm(summary_path) end)
+
+    snapshot =
+      Map.put(static_snapshot(), :adopted, [
+        %{
+          issue_id: "issue-adopted",
+          identifier: "MT-ADOPTED",
+          state: "Ready for Agent",
+          status: "starting",
+          started_at: DateTime.utc_now(),
+          updated_at: DateTime.utc_now(),
+          event_log_path: "/tmp/missing-symphony-events.jsonl",
+          summary_path: summary_path
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :AdoptedPartialOrchestrator)
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot})
+
+    payload = SymphonyElixirWeb.Presenter.state_payload(orchestrator_name, 50)
+
+    assert payload.counts.adopted == 1
+
+    assert [%{issue_identifier: "MT-ADOPTED", status: "starting", recent_events: []}] =
+             payload.adopted
+  end
+
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer
