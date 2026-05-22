@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, StatusDashboard}
   alias SymphonyElixir.Runtime.EventSummarizer
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
@@ -57,7 +57,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     expanding? = !MapSet.member?(expanded_issues, issue_identifier)
 
     if expanding? do
-      summarize_issue_details(issue_identifier, socket.assigns.payload)
+      start_summary_task(issue_identifier, socket.assigns.payload)
     end
 
     expanded_issues =
@@ -631,9 +631,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> active_entries()
     |> Enum.find(&(&1.issue_identifier == issue_identifier))
     |> case do
-      nil -> :ok
-      entry -> EventSummarizer.summarize_entry(entry)
+      nil ->
+        :ok
+
+      entry ->
+        _ = EventSummarizer.summarize_entry(entry)
+        StatusDashboard.notify_update()
+        :ok
     end
+  end
+
+  defp start_summary_task(issue_identifier, payload) do
+    Task.start(fn -> summarize_issue_details(issue_identifier, payload) end)
+    :ok
   end
 
   defp active_entries(payload) when is_map(payload) do
