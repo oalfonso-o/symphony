@@ -142,7 +142,7 @@ defmodule SymphonyElixir.Runtime.EventSummarizer do
   end
 
   defp summary_workspace do
-    workspace = Path.join([Config.settings!().workspace.root, ".symphony_runtime", "summary_workspace"])
+    workspace = Path.join(Config.runtime_state_root(), "summary_workspace")
 
     with :ok <- File.mkdir_p(workspace) do
       {:ok, workspace}

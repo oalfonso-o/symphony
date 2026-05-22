@@ -72,6 +72,7 @@ defmodule SymphonyElixir.Config do
   @spec runtime_state_root() :: Path.t()
   def runtime_state_root do
     settings!().runtime.state_root
+    |> Path.expand()
   end
 
   @spec drain?() :: boolean()
