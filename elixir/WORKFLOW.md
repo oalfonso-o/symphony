@@ -141,6 +141,32 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `Rework` -> reviewer requested changes; planning + implementation required.
 - `Done` -> terminal state; no further action required.
 
+## Branch Naming Contract
+
+Use this branch shape for workflow-created PR branches:
+
+```text
+<issue-id>/<issue-slug>/<phase>
+```
+
+Examples:
+
+```text
+SYM-123/spark-summary-paths/WIP
+SYM-123/spark-summary-paths/test
+SYM-123/spark-summary-paths/deploy
+```
+
+Rules:
+
+- The branch must start with the Linear issue identifier, such as `SYM-123`.
+- Do not include a product prefix such as `symphony` and do not include any
+  epic or workstream label in the branch name.
+- `issue-slug` is a kebab-case title slug, maximum 20 characters.
+- Normal implementation branches use `WIP`.
+- If a future workflow creates separate test or deployment handoff branches,
+  use `test` and `deploy`.
+
 ## Step 0: Determine current ticket state and route
 
 1. Fetch the issue by explicit ticket ID.
@@ -156,7 +182,8 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Done` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
+   - Create a fresh `.../WIP` branch from `origin/main` using the Branch Naming
+     Contract and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
@@ -282,7 +309,8 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing `## Codex Workpad` comment from the issue.
-5. Create a fresh branch from `origin/main`.
+5. Create a fresh `.../WIP` branch from `origin/main` using the Branch Naming
+   Contract.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
    - Create a new bootstrap `## Codex Workpad` comment.
@@ -301,7 +329,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## Guardrails
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
+- For closed/merged branch PRs, create a new `.../WIP` branch from `origin/main` and restart from reproduction/planning as if starting fresh.
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
